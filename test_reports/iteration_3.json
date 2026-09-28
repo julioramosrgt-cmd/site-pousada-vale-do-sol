@@ -1,0 +1,34 @@
+{
+  "summary": "Frontend regression test on Admin Rooms + Reservations modals after claimed scroll/save fix. Core save/edit round-trip WORKS at 1280x720. However, the CSS scroll fix described in the problem statement was NOT actually applied to DialogContent - modals still have overflowY:visible and maxHeight:none, so at viewport heights <=700px the Salvar button falls below the viewport and cannot be reached.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "RoomsPage Dialog (also ReservationsPage Dialog)",
+        "issue": "Claimed fix 'max-h-[90vh] overflow-y-auto' was NOT applied. DialogContent still has only 'max-w-2xl'. Measured at 1280x600: dialog height=740, top=-70, bottom=670, viewport=600, Save button at y=609-645 (off-screen), overflowY=visible, maxHeight=none, scrollHeight==clientHeight (no internal scroll). At 1280x720 it happens to fit only because content is 738px (Save at bottom=705, viewport=720) - reachable but modal top is clipped by 10px.",
+        "selector": "[role='dialog'] (DialogContent max-w-2xl on RoomsPage.js line 93 and ReservationsPage.js line 103)",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "All admin dialogs", "issues": ["Console warning: 'Missing Description or aria-describedby={undefined} for DialogContent' - add DialogDescription for a11y"]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Actually apply the claimed fix: change className='max-w-2xl' to className='max-w-2xl max-h-[90vh] overflow-y-auto' on DialogContent in /app/frontend/src/pages/admin/RoomsPage.js (line 93) AND /app/frontend/src/pages/admin/ReservationsPage.js (line 103). Current code does NOT contain the fix mentioned in the problem statement.",
+    "Optional: add <DialogDescription> to silence Radix a11y warning."
+  ],
+  "critical_code_review_comments": [
+    "Payload cleanup on RoomsPage save handler is NOT implemented as described - it still spreads the entire form (`...form`) so id/created_at/ical_token would still be sent when editing. Backend RoomIn seemingly ignores extra fields (no 422 observed), but the described 'hardening' was not applied.",
+    "Both admin dialog modals need max-h + overflow-y-auto to reliably scroll on shorter viewports."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (skipped per request)", "frontend": "functional flows 100% at 1280x720; scroll-fix regression FAILED at <=700px height"},
+  "seed_data_creation": "Created + edited + deleted a test room 'Suíte Master Teste' end-to-end successfully. Cleanup completed.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "The functional save/edit round-trip works: POST /api/rooms and PUT /api/rooms/{id} both succeed, toast 'Quarto salvo' shows, edit modal repopulates with correct values (name, category, daily_rate=350, rate_per_guest checkbox checked, amenities joined by comma), and updated daily_rate persists (card shows R$ 420). The Reservations 'Nova reserva' modal Save button is reachable at 1280x720 (bottom=695, viewport=720). The ONLY problem is the missing CSS scroll classes - once main agent actually adds 'max-h-[90vh] overflow-y-auto' to both DialogContent instances, retest at viewport heights 600/720/900 to confirm internal scrolling works and Save is reachable in all cases.",
+  "rca of the issue": "Root cause: main agent's summary said they added 'max-h-[90vh] overflow-y-auto' to DialogContent on RoomsPage and ReservationsPage, but a code inspection of the current files shows only 'className=\"max-w-2xl\"'. The claimed edit was never persisted. Reproduction: open /admin/rooms at viewport 1280x600, click Novo quarto - the modal renders 740px tall with the Salvar button below the visible viewport at y=609 (viewport ends at 600), and there is no internal scrollbar because computed overflowY is 'visible' and maxHeight is 'none'. Mitigation: apply the intended className change to lines 93 (RoomsPage) and 103 (ReservationsPage)."
+}

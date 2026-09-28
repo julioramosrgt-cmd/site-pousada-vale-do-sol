@@ -35,19 +35,29 @@ export default function RoomsPage() {
   const save = async (e) => {
     e.preventDefault();
     const payload = {
-      ...form,
-      amenities: typeof form.amenities === "string" ? form.amenities.split(",").map((s) => s.trim()).filter(Boolean) : form.amenities,
-      daily_rate: parseFloat(form.daily_rate || 0),
+      name: form.name,
+      category: form.category || "Quarto",
       max_adults: parseInt(form.max_adults || 1, 10),
       max_children: parseInt(form.max_children || 0, 10),
+      amenities: typeof form.amenities === "string"
+        ? form.amenities.split(",").map((s) => s.trim()).filter(Boolean)
+        : (form.amenities || []),
+      daily_rate: parseFloat(form.daily_rate || 0),
+      rate_per_guest: !!form.rate_per_guest,
       min_stay: parseInt(form.min_stay || 1, 10),
+      status: form.status || "available",
+      description: form.description || "",
+      cover_image: form.cover_image || "",
     };
     try {
       if (editing) await api.put(`/rooms/${editing.id}`, payload);
       else await api.post("/rooms", payload);
       toast.success("Quarto salvo");
       setOpen(false); load();
-    } catch (err) { toast.error(err?.response?.data?.detail || "Erro"); }
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      toast.error(typeof detail === "string" ? detail : "Erro ao salvar");
+    }
   };
 
   const remove = async (r) => {
@@ -90,7 +100,7 @@ export default function RoomsPage() {
       </div>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>{editing ? "Editar quarto" : "Novo quarto"}</DialogTitle></DialogHeader>
           <form onSubmit={save} className="grid sm:grid-cols-2 gap-3">
             <div className="sm:col-span-2"><Label>Nome *</Label><Input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="room-name" /></div>

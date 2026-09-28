@@ -100,7 +100,7 @@ export default function ReservationsPage() {
           </Select>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild><Button data-testid="btn-new-reservation" className="btn-terra rounded-xl"><Plus className="w-4 h-4 mr-1" /> Nova reserva</Button></DialogTrigger>
-            <DialogContent className="max-w-2xl">
+            <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
               <DialogHeader><DialogTitle>Nova reserva direta</DialogTitle></DialogHeader>
               <form onSubmit={save} className="grid sm:grid-cols-2 gap-3">
                 <div className="sm:col-span-2"><Label>Hóspede *</Label><Input required value={form.guest_name} onChange={(e) => setForm({ ...form, guest_name: e.target.value })} /></div>

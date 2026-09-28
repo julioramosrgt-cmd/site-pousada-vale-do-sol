@@ -8,10 +8,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Plus, Trash2, Pencil } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 
 const emptyRoom = {
   name: "", category: "Quarto", max_adults: 2, max_children: 0,
-  amenities: [], daily_rate: 0, min_stay: 1, status: "available",
+  amenities: [], daily_rate: 0, rate_per_guest: false, min_stay: 1, status: "available",
   description: "", cover_image: "",
 };
 
@@ -75,7 +76,7 @@ export default function RoomsPage() {
                 <h3 className="font-serif text-lg">{r.name}</h3>
                 <span className="font-mono text-[color:var(--pousada-terracotta)]">R$ {Number(r.daily_rate).toFixed(0)}</span>
               </div>
-              <div className="text-xs text-stone-500 mt-1">{r.category} · {r.max_adults} adultos + {r.max_children} crianças · min {r.min_stay}n</div>
+              <div className="text-xs text-stone-500 mt-1">{r.category} · {r.max_adults} adultos + {r.max_children} crianças · min {r.min_stay}n{r.rate_per_guest ? " · por hóspede" : ""}</div>
               <div className="text-xs mt-2">
                 <span className={`status-dot ${r.status === "maintenance" ? "status-maintenance" : "status-confirmed"}`} /> {r.status === "maintenance" ? " Em manutenção" : " Disponível"}
               </div>
@@ -95,6 +96,13 @@ export default function RoomsPage() {
             <div className="sm:col-span-2"><Label>Nome *</Label><Input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="room-name" /></div>
             <div><Label>Categoria</Label><Input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} /></div>
             <div><Label>Diária (R$)</Label><Input type="number" step="0.01" value={form.daily_rate} onChange={(e) => setForm({ ...form, daily_rate: e.target.value })} /></div>
+            <div className="sm:col-span-2 flex items-center gap-2 rounded-xl bg-stone-50 border border-stone-200 p-3">
+              <Checkbox id="rate_per_guest" checked={!!form.rate_per_guest} onCheckedChange={(v) => setForm({ ...form, rate_per_guest: !!v })} data-testid="room-rate-per-guest" />
+              <label htmlFor="rate_per_guest" className="text-sm">
+                <div className="font-medium">Cobrar por hóspede</div>
+                <div className="text-xs text-stone-500">Total = diária × nº hóspedes × noites. Desmarque para cobrar valor único por diária.</div>
+              </label>
+            </div>
             <div><Label>Máx. adultos</Label><Input type="number" min="1" value={form.max_adults} onChange={(e) => setForm({ ...form, max_adults: e.target.value })} /></div>
             <div><Label>Máx. crianças</Label><Input type="number" min="0" value={form.max_children} onChange={(e) => setForm({ ...form, max_children: e.target.value })} /></div>
             <div><Label>Estada mínima (noites)</Label><Input type="number" min="1" value={form.min_stay} onChange={(e) => setForm({ ...form, min_stay: e.target.value })} /></div>

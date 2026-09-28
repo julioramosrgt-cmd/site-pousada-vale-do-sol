@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Trash2, TrendingUp, TrendingDown, Download } from "lucide-react";
+import { Plus, Trash2, TrendingUp, TrendingDown, Download, FileText } from "lucide-react";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from "recharts";
 
 const CATEGORIES = ["Diárias", "Consumo Bar/Restaurante", "Manutenção", "Limpeza", "Comissões OTA", "Salários", "Utilidades", "Outros"];
@@ -48,6 +48,23 @@ export default function FinancePage() {
     } catch { toast.error("Falha ao exportar"); }
   };
 
+  const exportPDF = async () => {
+    try {
+      const token = localStorage.getItem("pousada_token");
+      const r = await fetch(`${API}/finance/report.pdf?from_date=${range.from}&to_date=${range.to}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!r.ok) throw new Error("Erro no PDF");
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `relatorio_${range.from}_${range.to}.pdf`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      toast.success("PDF gerado");
+    } catch { toast.error("Falha ao gerar PDF"); }
+  };
+
   const save = async (e) => {
     e.preventDefault();
     await api.post("/finance", { ...form, amount: parseFloat(form.amount || 0) });
@@ -68,9 +85,14 @@ export default function FinancePage() {
           <span className="text-xs uppercase tracking-widest text-amber-800/70">Financeiro</span>
           <h1 className="font-serif text-3xl sm:text-4xl">Receitas & Despesas</h1>
         </div>
-        <Button variant="outline" onClick={exportCSV} className="rounded-xl" data-testid="btn-export-csv">
-          <Download className="w-4 h-4 mr-1" />Exportar CSV
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={exportCSV} className="rounded-xl" data-testid="btn-export-csv">
+            <Download className="w-4 h-4 mr-1" />CSV
+          </Button>
+          <Button onClick={exportPDF} className="btn-terra rounded-xl" data-testid="btn-export-pdf">
+            <FileText className="w-4 h-4 mr-1" />Relatório PDF
+          </Button>
+        </div>
       </div>
 
       <div className="grid sm:grid-cols-3 gap-4 mb-6">

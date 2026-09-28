@@ -1,4 +1,6 @@
 import { NavLink, Outlet, Link } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { api } from "@/lib/apiClient";
 import { useAuth } from "@/lib/auth";
 import { LayoutDashboard, CalendarDays, ClipboardList, BedDouble, Image, Cable, MessageSquare, Wallet, KeyRound, LogOut, ExternalLink, Grid3x3, Users } from "lucide-react";
 
@@ -18,15 +20,24 @@ const NAV = [
 
 export default function AdminLayout() {
   const { user, logout } = useAuth();
+  const [settings, setSettings] = useState(null);
+  useEffect(() => { api.get("/settings").then((r) => setSettings(r.data)).catch(() => {}); }, []);
   const items = NAV.filter((it) => !it.adminOnly || user?.role === "admin");
   return (
     <div className="min-h-screen bg-[color:var(--pousada-bg)] flex">
       <aside className="hidden md:flex md:w-64 flex-col border-r border-stone-200 bg-white">
-        <div className="p-5 border-b border-stone-100">
-          <div className="font-serif text-xl">Painel Pousada</div>
-          <div className="text-xs text-stone-500 mt-1 truncate">{user?.email}</div>
-          <div className="text-[10px] uppercase tracking-widest mt-1 text-[color:var(--pousada-terracotta)]">{user?.role === "admin" ? "Administrador" : "Recepção"}</div>
+        <div className="p-5 border-b border-stone-100 flex items-center gap-3">
+          {settings?.logo_url ? (
+            <img src={settings.logo_url} alt="logo" className="h-10 w-10 rounded-full object-cover border border-stone-200" data-testid="admin-logo" />
+          ) : (
+            <div className="h-10 w-10 rounded-full bg-[color:var(--pousada-terracotta)] text-white flex items-center justify-center font-serif">{(settings?.name || "P").charAt(0)}</div>
+          )}
+          <div className="min-w-0">
+            <div className="font-serif text-lg truncate">{settings?.name || "Painel"}</div>
+            <div className="text-[10px] uppercase tracking-widest text-[color:var(--pousada-terracotta)]">{user?.role === "admin" ? "Administrador" : "Recepção"}</div>
+          </div>
         </div>
+        <div className="px-5 py-2 border-b border-stone-100 text-xs text-stone-500 truncate">{user?.email}</div>
         <nav className="flex-1 p-3 space-y-1">
           {items.map((it) => (
             <NavLink key={it.to} to={it.to} end={it.end} data-testid={it.testid}

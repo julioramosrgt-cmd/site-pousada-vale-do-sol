@@ -63,10 +63,22 @@ export default function ReservationsPage() {
   const sendPix = (r) => {
     const room = rooms.find((x) => x.id === r.room_id);
     const nights = Math.max(1, Math.round((new Date(r.checkout_date) - new Date(r.checkin_date)) / 86400000));
-    const val = r.total_amount || (room ? Number(room.daily_rate) * nights : 0);
+    const guests = (r.adults || 1) + (r.children || 0);
+    const rate = room ? Number(room.daily_rate) : 0;
+    const val = r.total_amount || (room && room.rate_per_guest ? rate * guests * nights : rate * nights);
     const msg = `Olá ${r.guest_name}! Para confirmar sua reserva (${r.checkin_date} a ${r.checkout_date})${room ? ` no quarto ${room.name}` : ""}, envie R$ ${val.toFixed(2)} via PIX para: ${settings.pix_key || "-"} (${settings.pix_key_type || "chave"}). Após o envio, nos encaminhe o comprovante. Obrigado!`;
     const wa = (r.guest_phone || settings.whatsapp || "").replace(/\D/g, "");
     window.open(`https://wa.me/${wa}?text=${encodeURIComponent(msg)}`, "_blank");
+  };
+
+  const priceOf = (r) => {
+    const room = rooms.find((x) => x.id === r.room_id);
+    if (!room) return null;
+    const nights = Math.max(0, Math.round((new Date(r.checkout_date) - new Date(r.checkin_date)) / 86400000));
+    const guests = (r.adults || 1) + (r.children || 0);
+    const rate = Number(room.daily_rate || 0);
+    const total = room.rate_per_guest ? rate * guests * nights : rate * nights;
+    return { room, nights, guests, rate, total, perGuest: !!room.rate_per_guest };
   };
 
   const roomName = (id) => rooms.find((r) => r.id === id)?.name || "—";
@@ -136,13 +148,22 @@ export default function ReservationsPage() {
             </thead>
             <tbody>
               {rows.length === 0 && <tr><td colSpan={6} className="p-6 text-center text-stone-500">Nenhuma reserva</td></tr>}
-              {rows.map((r) => (
+              {rows.map((r) => {
+                const p = priceOf(r);
+                return (
                 <tr key={r.id} className="border-t border-stone-100" data-testid={`res-row-${r.id}`}>
                   <td className="p-3">
                     <div className="font-medium">{r.guest_name || "Sem nome"}</div>
                     <div className="text-xs text-stone-500">{r.guest_phone} {r.guest_email && `· ${r.guest_email}`}</div>
                   </td>
-                  <td className="p-3">{roomName(r.room_id)}</td>
+                  <td className="p-3">
+                    <div>{roomName(r.room_id)}</div>
+                    {p && p.nights > 0 && (
+                      <div className="text-[10px] text-stone-500 font-mono" data-testid={`res-breakdown-${r.id}`}>
+                        {p.perGuest ? `R$${p.rate}×${p.guests}h×${p.nights}n` : `R$${p.rate}×${p.nights}n`} = <span className="text-[color:var(--pousada-terracotta)]">R$ {p.total.toFixed(2)}</span>
+                      </div>
+                    )}
+                  </td>
                   <td className="p-3 font-mono text-xs">{r.checkin_date} → {r.checkout_date}</td>
                   <td className="p-3 text-xs uppercase text-stone-500">{r.source}{r.ota_source ? `/${r.ota_source}` : ""}</td>
                   <td className="p-3">
@@ -158,7 +179,8 @@ export default function ReservationsPage() {
                     </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/apiClient";
@@ -8,7 +8,14 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowLeft, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Calculator } from "lucide-react";
+
+function money(v) { return `R$ ${Number(v || 0).toFixed(2).replace(".", ",")}`; }
+function nightsBetween(a, b) {
+  if (!a || !b) return 0;
+  const d = Math.round((new Date(b) - new Date(a)) / 86400000);
+  return d > 0 ? d : 0;
+}
 
 export default function PublicReservation() {
   const [rooms, setRooms] = useState([]);
@@ -30,11 +37,19 @@ export default function PublicReservation() {
 
   const upd = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
+  const selectedRoom = useMemo(() => rooms.find((r) => r.id === form.room_id), [rooms, form.room_id]);
+  const nights = nightsBetween(form.checkin_date, form.checkout_date);
+  const guests = (Number(form.adults) || 0) + (Number(form.children) || 0);
+  const rate = Number(selectedRoom?.daily_rate || 0);
+  const perGuest = !!selectedRoom?.rate_per_guest;
+  const total = perGuest ? rate * guests * nights : rate * nights;
+
   const submit = async (e) => {
     e.preventDefault();
     if (!form.accepted_terms) return toast.error("Aceite os termos para continuar");
-    if (form.checkin_date && form.checkout_date && form.checkout_date <= form.checkin_date)
-      return toast.error("Data de saída deve ser após a chegada");
+    if (nights <= 0) return toast.error("Data de saída deve ser após a chegada");
+    if (selectedRoom && guests > (selectedRoom.max_adults + selectedRoom.max_children))
+      return toast.error(`Este quarto acomoda no máximo ${selectedRoom.max_adults + selectedRoom.max_children} hóspedes`);
     setSaving(true);
     try {
       const payload = { ...form, room_id: form.room_id || null };
@@ -47,13 +62,14 @@ export default function PublicReservation() {
 
   if (done) {
     const wa = (settings.whatsapp || "").replace(/\D/g, "");
-    const msg = encodeURIComponent(`Olá! Acabei de enviar uma pré-reserva no site em nome de ${form.guest_name} para ${form.checkin_date} a ${form.checkout_date}.`);
+    const msg = encodeURIComponent(`Olá! Acabei de enviar uma pré-reserva no site em nome de ${form.guest_name} para ${form.checkin_date} a ${form.checkout_date}. Valor estimado: ${money(total)}.`);
     return (
       <div className="min-h-screen flex items-center justify-center px-4 bg-[color:var(--pousada-bg)]">
         <div className="max-w-lg w-full rounded-2xl bg-white p-8 shadow-warm border border-stone-200/70 text-center">
           <CheckCircle2 className="w-14 h-14 mx-auto text-[color:var(--pousada-palm)]" />
           <h1 className="font-serif text-3xl mt-4">Pré-reserva enviada!</h1>
           <p className="text-stone-600 mt-2">Aguarde nosso contato para confirmar disponibilidade e receber a chave PIX.</p>
+          {total > 0 && <p className="mt-3 font-mono text-lg text-[color:var(--pousada-terracotta)]">Estimativa: {money(total)}</p>}
           <div className="mt-6 flex flex-col sm:flex-row gap-3 justify-center">
             {wa && <a href={`https://wa.me/${wa}?text=${msg}`} target="_blank" rel="noreferrer" className="btn-terra rounded-xl px-5 py-2.5 font-medium">Falar no WhatsApp</a>}
             <Link to="/" className="rounded-xl px-5 py-2.5 border border-stone-300">Voltar ao site</Link>
@@ -65,11 +81,16 @@ export default function PublicReservation() {
 
   return (
     <div className="min-h-screen bg-[color:var(--pousada-bg)] py-8">
-      <div className="max-w-2xl mx-auto px-4">
+      <div className="max-w-3xl mx-auto px-4">
         <Link to="/" className="inline-flex items-center gap-1 text-sm text-stone-600 hover:text-stone-900 mb-6"><ArrowLeft className="w-4 h-4" /> Voltar</Link>
         <div className="rounded-2xl bg-white shadow-warm border border-stone-200/70 p-6 sm:p-8">
-          <span className="text-xs uppercase tracking-widest text-amber-800/70">Ficha Nacional de Registro de Hóspedes (FNRH)</span>
-          <h1 className="font-serif text-3xl sm:text-4xl mt-1">Pré-reserva</h1>
+          <div className="flex items-center gap-3 mb-2">
+            {settings.logo_url && <img src={settings.logo_url} alt="" className="h-10 w-10 rounded-full object-cover border border-stone-200" />}
+            <div>
+              <span className="text-xs uppercase tracking-widest text-amber-800/70">Ficha Nacional de Registro de Hóspedes (FNRH)</span>
+              <h1 className="font-serif text-3xl sm:text-4xl">Pré-reserva</h1>
+            </div>
+          </div>
           <p className="text-stone-600 mt-2">Preencha seus dados. A confirmação ocorre após envio do comprovante PIX.</p>
 
           <form onSubmit={submit} className="mt-8 space-y-5" data-testid="fnrh-form">
@@ -117,7 +138,7 @@ export default function PublicReservation() {
                 <Select value={form.room_id} onValueChange={(v) => upd("room_id", v)}>
                   <SelectTrigger data-testid="fnrh-room"><SelectValue placeholder="Sem preferência" /></SelectTrigger>
                   <SelectContent>
-                    {rooms.map((r) => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
+                    {rooms.map((r) => <SelectItem key={r.id} value={r.id}>{r.name} — {money(r.daily_rate)}{r.rate_per_guest ? "/hóspede" : ""}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
@@ -135,13 +156,32 @@ export default function PublicReservation() {
               </div>
               <div>
                 <Label>Adultos</Label>
-                <Input type="number" min="1" value={form.adults} onChange={(e) => upd("adults", parseInt(e.target.value || "1", 10))} />
+                <Input data-testid="fnrh-adults" type="number" min="1" value={form.adults} onChange={(e) => upd("adults", parseInt(e.target.value || "1", 10))} />
               </div>
               <div>
                 <Label>Crianças</Label>
-                <Input type="number" min="0" value={form.children} onChange={(e) => upd("children", parseInt(e.target.value || "0", 10))} />
+                <Input data-testid="fnrh-children" type="number" min="0" value={form.children} onChange={(e) => upd("children", parseInt(e.target.value || "0", 10))} />
               </div>
             </div>
+
+            {/* Real-time calculation */}
+            {selectedRoom && (
+              <div className="rounded-2xl bg-[color:var(--pousada-elev)] paper-grain p-5 border border-stone-200/70" data-testid="price-breakdown">
+                <div className="flex items-center gap-2 mb-3"><Calculator className="w-4 h-4 text-[color:var(--pousada-terracotta)]" /><h4 className="font-serif text-lg">Estimativa do valor</h4></div>
+                <div className="text-sm space-y-1.5 text-stone-700">
+                  <div className="flex justify-between"><span>Quarto</span><span className="font-medium">{selectedRoom.name}</span></div>
+                  <div className="flex justify-between"><span>Diária {perGuest ? "por hóspede" : ""}</span><span className="font-mono">{money(rate)}</span></div>
+                  <div className="flex justify-between"><span>Hóspedes</span><span className="font-mono">{guests}</span></div>
+                  <div className="flex justify-between"><span>Noites</span><span className="font-mono">{nights}</span></div>
+                  <div className="pt-2 border-t border-stone-300/70 text-xs text-stone-500">
+                    {perGuest
+                      ? `Cálculo: ${money(rate)} × ${guests} hóspedes × ${nights} noites`
+                      : `Cálculo: ${money(rate)} × ${nights} noites`}
+                  </div>
+                  <div className="pt-2 flex justify-between text-base"><span className="font-medium">Total estimado</span><span className="font-mono text-[color:var(--pousada-terracotta)] font-semibold" data-testid="total-estimate">{money(total)}</span></div>
+                </div>
+              </div>
+            )}
 
             <div>
               <Label>Observações</Label>
@@ -154,7 +194,7 @@ export default function PublicReservation() {
             </label>
 
             <Button data-testid="fnrh-submit" type="submit" disabled={saving} className="btn-terra w-full rounded-xl h-11 font-medium">
-              {saving ? "Enviando..." : "Enviar pré-reserva"}
+              {saving ? "Enviando..." : `Enviar pré-reserva${total > 0 ? ` (${money(total)})` : ""}`}
             </Button>
           </form>
         </div>

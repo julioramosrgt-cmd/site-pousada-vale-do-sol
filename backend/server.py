@@ -186,15 +186,23 @@ class SettingsIn(BaseModel):
     tagline: Optional[str] = ""
     description: Optional[str] = ""
     email: Optional[str] = ""
+    phone: Optional[str] = ""  # telefone clicável
     whatsapp: Optional[str] = ""
     pix_key: Optional[str] = ""
     pix_key_type: Optional[str] = ""  # cpf, cnpj, email, phone, random
     address: Optional[str] = ""
+    latitude: Optional[str] = ""
+    longitude: Optional[str] = ""
     checkin_time: Optional[str] = "14:00"
     checkout_time: Optional[str] = "11:00"
     cover_image: Optional[str] = ""
+    logo_url: Optional[str] = ""
     instagram: Optional[str] = ""
     facebook: Optional[str] = ""
+    airbnb_url: Optional[str] = ""
+    booking_url: Optional[str] = ""
+    triplar_url: Optional[str] = ""
+    whatsapp_webhook_url: Optional[str] = ""  # notificação push (ex.: CallMeBot)
     policies: Optional[str] = ""
 
 
@@ -213,8 +221,9 @@ class Room(BaseModel):
     max_children: int = 0
     amenities: List[str] = []
     daily_rate: float = 0.0
+    rate_per_guest: bool = False  # se True, ValorTotal = rate * hóspedes * noites
     min_stay: int = 1
-    status: str = "available"  # available | maintenance
+    status: str = "available"
     description: Optional[str] = ""
     cover_image: Optional[str] = ""
     ical_token: str = Field(default_factory=lambda: uuid.uuid4().hex)
@@ -228,6 +237,7 @@ class RoomIn(BaseModel):
     max_children: int = 0
     amenities: List[str] = []
     daily_rate: float = 0.0
+    rate_per_guest: bool = False
     min_stay: int = 1
     status: str = "available"
     description: Optional[str] = ""
@@ -799,10 +809,40 @@ async def public_pre_reservation(data: PublicReservationIn):
                 subject=f"Nova pré-reserva: {r.get('guest_name')}",
                 html=_owner_email_html(settings, r, room_name),
             ))
+        # WhatsApp push via webhook (CallMeBot / n8n / Zapier)
+        webhook = (settings.get("whatsapp_webhook_url") or "").strip()
+        if webhook:
+            msg = (
+                f"🏨 *Nova pré-reserva* — {settings.get('name') or 'Pousada'}\n"
+                f"Hóspede: {r.get('guest_name')}\n"
+                f"Contato: {r.get('guest_phone')} | {r.get('guest_email')}\n"
+                f"Datas: {r.get('checkin_date')} → {r.get('checkout_date')}\n"
+                f"Quarto: {room_name}\n"
+                f"Pessoas: {r.get('adults')} adultos, {r.get('children')} crianças"
+            )
+            asyncio.create_task(_fire_webhook(webhook, msg))
     except Exception as e:
-        logger.warning(f"pre-reservation email dispatch failed: {e}")
+        logger.warning(f"pre-reservation dispatch failed: {e}")
 
     return {"ok": True, "reservation_id": r["id"], "message": "Pré-reserva recebida. Aguarde contato para confirmação."}
+
+
+async def _fire_webhook(url: str, text: str):
+    """Send a WhatsApp push through a user-configured webhook (e.g. CallMeBot).
+    Injects the message either as `text` query param (GET) or JSON body (POST).
+    """
+    try:
+        async with httpx.AsyncClient(timeout=15) as clientx:
+            if "{text}" in url:
+                await clientx.get(url.replace("{text}", httpx.QueryParams({"t": text})["t"]))
+            elif "callmebot.com" in url or "text=" in url:
+                sep = "&" if "?" in url else "?"
+                await clientx.get(f"{url}{sep}text={httpx.QueryParams({'t': text})['t']}")
+            else:
+                await clientx.post(url, json={"text": text})
+        logger.info("WhatsApp webhook fired")
+    except Exception as e:
+        logger.warning(f"WhatsApp webhook error: {e}")
 
 
 # ----- Users management (admin only) -----
@@ -985,6 +1025,133 @@ async def pix_brcode(data: PixIn, user=Depends(require_admin)):
         "pix_key": key,
         "merchant_name": name,
     }
+
+
+# ----- Finance PDF report -----
+@api.get("/finance/report.pdf")
+async def finance_report_pdf(user=Depends(require_admin_role), from_date: Optional[str] = None, to_date: Optional[str] = None):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
+    from reportlab.lib.enums import TA_LEFT, TA_RIGHT
+
+    settings = await db.settings.find_one({"id": "singleton"}, {"_id": 0}) or {}
+    q: dict = {"is_deleted": {"$ne": True}}
+    if from_date or to_date:
+        q["entry_date"] = {}
+        if from_date:
+            q["entry_date"]["$gte"] = from_date
+        if to_date:
+            q["entry_date"]["$lte"] = to_date
+    rows = await db.finance.find(q, {"_id": 0}).sort("entry_date", 1).to_list(5000)
+    income = sum(r["amount"] for r in rows if r["kind"] == "income")
+    expense = sum(r["amount"] for r in rows if r["kind"] == "expense")
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=18*mm, rightMargin=18*mm, topMargin=16*mm, bottomMargin=16*mm)
+    styles = getSampleStyleSheet()
+    TERRA = colors.HexColor("#C85A32")
+    PALM = colors.HexColor("#2D5A43")
+    SAND = colors.HexColor("#F4EFE6")
+
+    title_style = ParagraphStyle("title", parent=styles["Heading1"], textColor=TERRA, fontSize=22, spaceAfter=4)
+    sub_style = ParagraphStyle("sub", parent=styles["Normal"], textColor=colors.HexColor("#57534E"), fontSize=10, spaceAfter=14)
+
+    story = []
+    # Header row: logo + title
+    logo_url = (settings.get("logo_url") or "").strip()
+    header_cells = []
+    if logo_url:
+        try:
+            if logo_url.startswith("/api/files/"):
+                path = logo_url.split("/api/files/", 1)[1]
+                data, _ct = get_object(path)
+                logo_img = RLImage(BytesIO(data), width=28*mm, height=28*mm)
+            else:
+                lr = requests.get(logo_url, timeout=10)
+                logo_img = RLImage(BytesIO(lr.content), width=28*mm, height=28*mm)
+            logo_img.hAlign = "LEFT"
+            header_cells.append(logo_img)
+        except Exception:
+            header_cells.append(Paragraph("", styles["Normal"]))
+    else:
+        header_cells.append(Paragraph("", styles["Normal"]))
+
+    header_cells.append(Paragraph(
+        f"<font color='#C85A32'><b>{settings.get('name') or 'Pousada'}</b></font><br/>"
+        f"<font size=9 color='#57534E'>Relatório Financeiro<br/>Período: {from_date or 'início'} → {to_date or 'hoje'}</font>",
+        styles["Normal"],
+    ))
+    ht = Table([header_cells], colWidths=[32*mm, 130*mm])
+    ht.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
+    story.append(ht)
+    story.append(Spacer(1, 6))
+    story.append(Paragraph("<hr/>", styles["Normal"]))
+    story.append(Spacer(1, 6))
+
+    # Summary
+    profit = income - expense
+    summary_data = [
+        ["Receitas", f"R$ {income:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")],
+        ["Despesas", f"R$ {expense:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")],
+        ["Lucro líquido", f"R$ {profit:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")],
+    ]
+    st = Table(summary_data, colWidths=[80*mm, 60*mm])
+    st.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), SAND),
+        ("BACKGROUND", (0, 1), (-1, 1), SAND),
+        ("BACKGROUND", (0, 2), (-1, 2), TERRA),
+        ("TEXTCOLOR", (0, 2), (-1, 2), colors.white),
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 11),
+        ("PADDING", (0, 0), (-1, -1), 8),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("FONTNAME", (0, 2), (-1, 2), "Helvetica-Bold"),
+    ]))
+    story.append(st)
+    story.append(Spacer(1, 16))
+
+    # Entries table
+    story.append(Paragraph("<b>Lançamentos</b>", ParagraphStyle("h2", parent=styles["Heading2"], textColor=PALM, fontSize=13)))
+    tbl = [["Data", "Tipo", "Categoria", "Descrição", "Valor (R$)"]]
+    for r in rows:
+        tbl.append([
+            r.get("entry_date", ""),
+            "Receita" if r.get("kind") == "income" else "Despesa",
+            r.get("category", ""),
+            (r.get("description") or "")[:60],
+            f"{float(r.get('amount', 0)):,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+        ])
+    if len(tbl) == 1:
+        tbl.append(["—", "—", "—", "Sem lançamentos no período", "0,00"])
+    t = Table(tbl, colWidths=[22*mm, 20*mm, 32*mm, 66*mm, 22*mm], repeatRows=1)
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), PALM),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (4, 1), (4, -1), "RIGHT"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, SAND]),
+        ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#D1C6B4")),
+        ("PADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(t)
+
+    story.append(Spacer(1, 24))
+    story.append(Paragraph(
+        f"<font size=8 color='#78716C'>Gerado por {settings.get('name') or 'Pousada'} · {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M UTC')}</font>",
+        styles["Normal"],
+    ))
+
+    doc.build(story)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="financeiro_{from_date or "inicio"}_{to_date or "hoje"}.pdf"'},
+    )
 
 
 # ----- Finance -----

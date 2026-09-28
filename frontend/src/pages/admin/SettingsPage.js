@@ -161,6 +161,21 @@ export default function SettingsPage() {
         <div><Label>Booking.com (URL)</Label><Input value={s.booking_url || ""} onChange={(e) => upd("booking_url", e.target.value)} data-testid="set-booking" /></div>
         <div><Label>TripLar (URL)</Label><Input value={s.triplar_url || ""} onChange={(e) => upd("triplar_url", e.target.value)} data-testid="set-triplar" /></div>
 
+        <h3 className="sm:col-span-2 font-serif text-xl pt-4 border-t border-stone-100">Preços & Feriados</h3>
+        <div className="sm:col-span-2">
+          <Label>Feriados importantes (uma data por linha, formato AAAA-MM-DD)</Label>
+          <Textarea rows={3} value={s.holidays || ""} onChange={(e) => upd("holidays", e.target.value)} placeholder={"2026-12-25\n2026-12-31\n2027-02-16"} data-testid="set-holidays" />
+          <p className="text-xs text-stone-500 mt-1">Nessas datas o preço tem o mesmo acréscimo de fim de semana.</p>
+        </div>
+        <div><Label>Acréscimo fim de semana / feriado (%)</Label><Input type="number" step="0.1" value={s.weekend_surcharge_pct ?? 10} onChange={(e) => upd("weekend_surcharge_pct", parseFloat(e.target.value || "0"))} /></div>
+        <div><Label>Desconto por adulto extra (%)</Label><Input type="number" step="0.1" value={s.extra_adult_discount_pct ?? 10} onChange={(e) => upd("extra_adult_discount_pct", parseFloat(e.target.value || "0"))} /></div>
+        <div><Label>Diária criança (%)</Label><Input type="number" step="0.1" value={s.child_rate_pct ?? 65} onChange={(e) => upd("child_rate_pct", parseFloat(e.target.value || "0"))} /></div>
+        <div className="sm:col-span-2 grid grid-cols-3 gap-3">
+          <div><Label>Pet pequeno (%)</Label><Input type="number" step="0.1" value={s.pet_small_pct ?? 20.7} onChange={(e) => upd("pet_small_pct", parseFloat(e.target.value || "0"))} /></div>
+          <div><Label>Pet médio (%)</Label><Input type="number" step="0.1" value={s.pet_medium_pct ?? 27.6} onChange={(e) => upd("pet_medium_pct", parseFloat(e.target.value || "0"))} /></div>
+          <div><Label>Pet grande (%)</Label><Input type="number" step="0.1" value={s.pet_large_pct ?? 34.5} onChange={(e) => upd("pet_large_pct", parseFloat(e.target.value || "0"))} /></div>
+        </div>
+
         <h3 className="sm:col-span-2 font-serif text-xl pt-4 border-t border-stone-100">Foto de capa (fallback)</h3>
         <div className="sm:col-span-2">
           <p className="text-sm text-stone-500 mb-2">Usada quando a galeria estiver vazia. O carrossel do hero usa as fotos da galeria abaixo.</p>

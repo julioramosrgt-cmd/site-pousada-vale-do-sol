@@ -7,7 +7,8 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Trash2, MessageSquare, Paperclip } from "lucide-react";
+import { Plus, Trash2, MessageSquare, Paperclip, FileText, Ban } from "lucide-react";
+import { API } from "@/lib/apiClient";
 
 const STATUS_LABEL = { pending: "Pendente", confirmed: "Confirmada", cancelled: "Cancelada", blocked: "Bloqueado", maintenance: "Manutenção", checked_in: "Check-in", checked_out: "Check-out" };
 
@@ -18,6 +19,8 @@ export default function ReservationsPage() {
   const [filter, setFilter] = useState("all");
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(newForm());
+  const [blockOpen, setBlockOpen] = useState(false);
+  const [blockForm, setBlockForm] = useState({ room_id: "", from_date: "", to_date: "", reason: "Manutenção" });
 
   function newForm() {
     return {
@@ -40,7 +43,14 @@ export default function ReservationsPage() {
   const save = async (e) => {
     e.preventDefault();
     try {
-      const payload = { ...form, room_id: form.room_id || null };
+      const payload = {
+        ...form,
+        room_id: form.room_id || null,
+        adults: Math.max(1, parseInt(form.adults || "1", 10)),
+        children: Math.max(0, parseInt(form.children || "0", 10)),
+        total_amount: parseFloat(form.total_amount || 0),
+        deposit_amount: parseFloat(form.deposit_amount || 0),
+      };
       await api.post("/reservations", payload);
       toast.success("Reserva criada");
       setOpen(false); setForm(newForm()); load();
@@ -58,6 +68,30 @@ export default function ReservationsPage() {
     await api.delete(`/reservations/${r.id}`);
     toast.success("Excluída");
     load();
+  };
+
+  const blockPeriod = async (e) => {
+    e.preventDefault();
+    if (!blockForm.room_id || !blockForm.from_date || !blockForm.to_date) return toast.error("Preencha quarto e datas");
+    try {
+      await api.post("/reservations/block", blockForm);
+      toast.success("Período bloqueado");
+      setBlockOpen(false); setBlockForm({ room_id: "", from_date: "", to_date: "", reason: "Manutenção" }); load();
+    } catch (err) { toast.error(err?.response?.data?.detail || "Erro"); }
+  };
+
+  const downloadVoucher = async (r) => {
+    try {
+      const token = localStorage.getItem("pousada_token");
+      const resp = await fetch(`${API}/reservations/${r.id}/voucher.pdf`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!resp.ok) throw new Error();
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `voucher_${(r.guest_name || "reserva").split(" ")[0]}_${r.checkin_date}.pdf`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    } catch { toast.error("Falha ao gerar voucher"); }
   };
 
   const sendPix = (r) => {
@@ -98,6 +132,27 @@ export default function ReservationsPage() {
               {Object.entries(STATUS_LABEL).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}
             </SelectContent>
           </Select>
+          <Dialog open={blockOpen} onOpenChange={setBlockOpen}>
+            <DialogTrigger asChild><Button variant="outline" className="rounded-xl" data-testid="btn-block-period"><Ban className="w-4 h-4 mr-1" />Bloquear período</Button></DialogTrigger>
+            <DialogContent className="max-w-md">
+              <DialogHeader><DialogTitle>Bloquear período</DialogTitle></DialogHeader>
+              <form onSubmit={blockPeriod} className="space-y-3">
+                <div>
+                  <Label>Quarto *</Label>
+                  <Select value={blockForm.room_id} onValueChange={(v) => setBlockForm({ ...blockForm, room_id: v })}>
+                    <SelectTrigger data-testid="block-room"><SelectValue placeholder="Selecione" /></SelectTrigger>
+                    <SelectContent>{rooms.map((r) => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div><Label>De *</Label><Input type="date" required value={blockForm.from_date} onChange={(e) => setBlockForm({ ...blockForm, from_date: e.target.value })} data-testid="block-from" /></div>
+                  <div><Label>Até *</Label><Input type="date" required value={blockForm.to_date} onChange={(e) => setBlockForm({ ...blockForm, to_date: e.target.value })} data-testid="block-to" /></div>
+                </div>
+                <div><Label>Motivo</Label><Input value={blockForm.reason} onChange={(e) => setBlockForm({ ...blockForm, reason: e.target.value })} placeholder="Manutenção, uso próprio..." /></div>
+                <Button type="submit" className="btn-terra w-full rounded-xl">Bloquear</Button>
+              </form>
+            </DialogContent>
+          </Dialog>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild><Button data-testid="btn-new-reservation" className="btn-terra rounded-xl"><Plus className="w-4 h-4 mr-1" /> Nova reserva</Button></DialogTrigger>
             <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
@@ -115,8 +170,8 @@ export default function ReservationsPage() {
                 </div>
                 <div><Label>Check-in *</Label><Input type="date" required value={form.checkin_date} onChange={(e) => setForm({ ...form, checkin_date: e.target.value })} /></div>
                 <div><Label>Check-out *</Label><Input type="date" required value={form.checkout_date} onChange={(e) => setForm({ ...form, checkout_date: e.target.value })} /></div>
-                <div><Label>Adultos</Label><Input type="number" min="1" value={form.adults} onChange={(e) => setForm({ ...form, adults: parseInt(e.target.value || "1", 10) })} /></div>
-                <div><Label>Crianças</Label><Input type="number" min="0" value={form.children} onChange={(e) => setForm({ ...form, children: parseInt(e.target.value || "0", 10) })} /></div>
+                <div><Label>Adultos</Label><Input type="number" min="1" value={form.adults} onChange={(e) => setForm({ ...form, adults: e.target.value })} onBlur={(e) => setForm({ ...form, adults: Math.max(1, parseInt(e.target.value || "1", 10)) })} /></div>
+                <div><Label>Crianças</Label><Input type="number" min="0" value={form.children} onChange={(e) => setForm({ ...form, children: e.target.value })} onBlur={(e) => setForm({ ...form, children: Math.max(0, parseInt(e.target.value || "0", 10)) })} /></div>
                 <div><Label>Valor total (R$)</Label><Input type="number" step="0.01" value={form.total_amount} onChange={(e) => setForm({ ...form, total_amount: parseFloat(e.target.value || "0") })} /></div>
                 <div><Label>Sinal recebido (R$)</Label><Input type="number" step="0.01" value={form.deposit_amount} onChange={(e) => setForm({ ...form, deposit_amount: parseFloat(e.target.value || "0") })} /></div>
                 <div className="sm:col-span-2"><Label>Status</Label>
@@ -179,6 +234,7 @@ export default function ReservationsPage() {
                           <Button size="icon" variant="ghost"><Paperclip className="w-4 h-4 text-[color:var(--pousada-palm)]" /></Button>
                         </a>
                       )}
+                      <Button size="icon" variant="ghost" title="Baixar voucher PDF" onClick={() => downloadVoucher(r)} data-testid={`voucher-${r.id}`}><FileText className="w-4 h-4 text-[color:var(--pousada-terracotta)]" /></Button>
                       <Button size="icon" variant="ghost" title="Enviar PIX no WhatsApp" onClick={() => sendPix(r)} data-testid={`send-pix-${r.id}`}><MessageSquare className="w-4 h-4" /></Button>
                       <Button size="icon" variant="ghost" onClick={() => remove(r)} data-testid={`del-${r.id}`}><Trash2 className="w-4 h-4 text-red-600" /></Button>
                     </div>

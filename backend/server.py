@@ -203,6 +203,13 @@ class SettingsIn(BaseModel):
     booking_url: Optional[str] = ""
     triplar_url: Optional[str] = ""
     whatsapp_webhook_url: Optional[str] = ""  # notificação push (ex.: CallMeBot)
+    holidays: Optional[str] = ""  # ISO dates separated by comma or newline (feriados importantes)
+    weekend_surcharge_pct: float = 10.0
+    child_rate_pct: float = 65.0
+    extra_adult_discount_pct: float = 10.0
+    pet_small_pct: float = 20.7
+    pet_medium_pct: float = 27.6
+    pet_large_pct: float = 34.5
     policies: Optional[str] = ""
 
 
@@ -271,6 +278,13 @@ class Reservation(BaseModel):
     accepted_terms: bool = False
     ota_uid: Optional[str] = None  # for imported events
     payment_receipt_url: Optional[str] = ""
+    # New pricing fields
+    children_0_3: int = 0
+    children_4_10: int = 0
+    pets_small: int = 0
+    pets_medium: int = 0
+    pets_large: int = 0
+    pricing_breakdown: Optional[dict] = None
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -288,6 +302,11 @@ class ReservationIn(BaseModel):
     checkout_date: str
     adults: int = 1
     children: int = 0
+    children_0_3: int = 0
+    children_4_10: int = 0
+    pets_small: int = 0
+    pets_medium: int = 0
+    pets_large: int = 0
     estimated_arrival: Optional[str] = ""
     notes: Optional[str] = ""
     total_amount: float = 0.0
@@ -310,6 +329,11 @@ class PublicReservationIn(BaseModel):
     checkout_date: str
     adults: int = 1
     children: int = 0
+    children_0_3: int = 0
+    children_4_10: int = 0
+    pets_small: int = 0
+    pets_medium: int = 0
+    pets_large: int = 0
     estimated_arrival: Optional[str] = ""
     notes: Optional[str] = ""
     accepted_terms: bool
@@ -778,6 +802,124 @@ def _owner_email_html(settings: dict, r: dict, room_name: str) -> str:
     )
 
 
+def _parse_holidays(raw: str) -> set:
+    if not raw:
+        return set()
+    out = set()
+    for token in raw.replace("\n", ",").split(","):
+        t = token.strip()
+        if not t:
+            continue
+        try:
+            date.fromisoformat(t)
+            out.add(t)
+        except Exception:
+            pass
+    return out
+
+
+def compute_pricing(room: dict, checkin: str, checkout: str, adults: int, children_0_3: int, children_4_10: int,
+                     pets_small: int, pets_medium: int, pets_large: int, settings: dict) -> dict:
+    """Apply Pousada Vale do Sol pricing rules per spec.
+    - Weekend/holiday surcharge on the nightly base rate
+    - 2nd+ adult: -10% (non cumulative — each extra adult flat 10% off)
+    - First child 0-3: free; other 0-3 children + all 4-10 children pay 65%
+    - Pets: %-based fee over 1-adult nightly rate (small 20.7%, medium 27.6%, large 34.5%)
+    """
+    try:
+        ci = date.fromisoformat(checkin)
+        co = date.fromisoformat(checkout)
+    except Exception:
+        return {"total": 0, "nights": [], "n_nights": 0, "error": "Datas inválidas"}
+    n = (co - ci).days
+    if n <= 0:
+        return {"total": 0, "nights": [], "n_nights": 0}
+
+    base_rate = float(room.get("daily_rate") or 0)
+    weekend_pct = float(settings.get("weekend_surcharge_pct", 10.0)) / 100.0
+    child_pct = float(settings.get("child_rate_pct", 65.0)) / 100.0
+    adult_disc_pct = float(settings.get("extra_adult_discount_pct", 10.0)) / 100.0
+    pet_small = float(settings.get("pet_small_pct", 20.7)) / 100.0
+    pet_medium = float(settings.get("pet_medium_pct", 27.6)) / 100.0
+    pet_large = float(settings.get("pet_large_pct", 34.5)) / 100.0
+    holidays = _parse_holidays(settings.get("holidays") or "")
+
+    adults = max(1, int(adults or 1))
+    children_0_3 = max(0, int(children_0_3 or 0))
+    children_4_10 = max(0, int(children_4_10 or 0))
+    paid_kids_0_3 = max(0, children_0_3 - 1)  # first 0-3 free
+    paying_children = paid_kids_0_3 + children_4_10
+
+    nights = []
+    total = 0.0
+    for i in range(n):
+        d = ci + timedelta(days=i)
+        is_weekend = d.weekday() in (4, 5)  # Fri, Sat night
+        is_holiday = d.isoformat() in holidays
+        surcharge = weekend_pct if (is_weekend or is_holiday) else 0.0
+        nightly = base_rate * (1 + surcharge)
+        # Adults
+        first_adult = nightly
+        extra_adult_each = nightly * (1 - adult_disc_pct)
+        adults_val = first_adult + max(0, adults - 1) * extra_adult_each
+        # Children
+        kids_val = paying_children * nightly * child_pct
+        # Pets (percent of nightly base for 1 adult)
+        pets_val = (pets_small * pet_small + pets_medium * pet_medium + pets_large * pet_large) * nightly
+        night_total = adults_val + kids_val + pets_val
+        nights.append({
+            "date": d.isoformat(),
+            "surcharge": round(surcharge * 100, 2),
+            "is_weekend": is_weekend,
+            "is_holiday": is_holiday,
+            "nightly_rate": round(nightly, 2),
+            "adults_value": round(adults_val, 2),
+            "children_value": round(kids_val, 2),
+            "pets_value": round(pets_val, 2),
+            "total": round(night_total, 2),
+        })
+        total += night_total
+
+    return {
+        "total": round(total, 2),
+        "n_nights": n,
+        "nights": nights,
+        "adults": adults,
+        "children_0_3": children_0_3,
+        "children_4_10": children_4_10,
+        "free_children": min(1, children_0_3),
+        "paying_children": paying_children,
+        "pets": {"small": pets_small, "medium": pets_medium, "large": pets_large},
+        "base_rate": base_rate,
+    }
+
+
+class PricingCalcIn(BaseModel):
+    room_id: str
+    checkin_date: str
+    checkout_date: str
+    adults: int = 1
+    children_0_3: int = 0
+    children_4_10: int = 0
+    pets_small: int = 0
+    pets_medium: int = 0
+    pets_large: int = 0
+
+
+@api.post("/pricing/calc")
+async def pricing_calc(data: PricingCalcIn):
+    """Public pricing calculator — no PII, no reservation write. Used by the public form and admin."""
+    room = await db.rooms.find_one({"id": data.room_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not room:
+        raise HTTPException(404, "Quarto não encontrado")
+    settings = await db.settings.find_one({"id": "singleton"}, {"_id": 0}) or {}
+    return compute_pricing(
+        room, data.checkin_date, data.checkout_date,
+        data.adults, data.children_0_3, data.children_4_10,
+        data.pets_small, data.pets_medium, data.pets_large, settings,
+    )
+
+
 # ----- Public receipt upload (no auth, rate-limited by content-type + size) -----
 @api.post("/public/uploads/receipt")
 async def public_upload_receipt(file: UploadFile = File(...)):
@@ -814,6 +956,22 @@ async def public_pre_reservation(data: PublicReservationIn):
         status="pending",
     ).model_dump()
     r["is_deleted"] = False
+    # Compute pricing server-side
+    try:
+        settings0 = await db.settings.find_one({"id": "singleton"}, {"_id": 0}) or {}
+        if r.get("room_id"):
+            room0 = await db.rooms.find_one({"id": r["room_id"], "is_deleted": {"$ne": True}}, {"_id": 0})
+            if room0:
+                r["pricing_breakdown"] = compute_pricing(
+                    room0, r["checkin_date"], r["checkout_date"],
+                    r.get("adults", 1), r.get("children_0_3", 0), r.get("children_4_10", 0),
+                    r.get("pets_small", 0), r.get("pets_medium", 0), r.get("pets_large", 0), settings0,
+                )
+                r["total_amount"] = r["pricing_breakdown"].get("total", 0)
+    except Exception as e:
+        logger.warning(f"pricing calc failed: {e}")
+    # Sync children legacy total
+    r["children"] = int(r.get("children_0_3", 0) or 0) + int(r.get("children_4_10", 0) or 0)
     await db.reservations.insert_one(r)
 
     # Fire-and-forget emails
@@ -1069,6 +1227,149 @@ async def pix_brcode(data: PixIn, user=Depends(require_admin)):
         "pix_key": key,
         "merchant_name": name,
     }
+
+
+class BlockDatesIn(BaseModel):
+    room_id: str
+    from_date: str
+    to_date: str
+    reason: Optional[str] = "Bloqueado"
+
+
+@api.post("/reservations/block")
+async def block_dates(data: BlockDatesIn, user=Depends(require_admin)):
+    room = await db.rooms.find_one({"id": data.room_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not room:
+        raise HTTPException(404, "Quarto não encontrado")
+    try:
+        ci = date.fromisoformat(data.from_date)
+        co = date.fromisoformat(data.to_date)
+    except Exception:
+        raise HTTPException(400, "Datas inválidas")
+    if co <= ci:
+        raise HTTPException(400, "Data final deve ser após a inicial")
+    r = Reservation(
+        room_id=data.room_id,
+        checkin_date=data.from_date,
+        checkout_date=data.to_date,
+        guest_name=data.reason or "Bloqueado",
+        source="direct",
+        status="blocked",
+        notes=f"Bloqueio manual: {data.reason or ''}",
+    ).model_dump()
+    r["is_deleted"] = False
+    await db.reservations.insert_one(r)
+    return clean_doc(r)
+
+
+# ----- Voucher PDF (per reservation) -----
+@api.get("/reservations/{res_id}/voucher.pdf")
+async def reservation_voucher(res_id: str, user=Depends(require_admin)):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
+
+    r = await db.reservations.find_one({"id": res_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not r:
+        raise HTTPException(404, "Reserva não encontrada")
+    settings = await db.settings.find_one({"id": "singleton"}, {"_id": 0}) or {}
+    room = await db.rooms.find_one({"id": r.get("room_id")}, {"_id": 0}) if r.get("room_id") else None
+    room_name = (room or {}).get("name", "—")
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=18*mm, rightMargin=18*mm, topMargin=16*mm, bottomMargin=16*mm)
+    styles = getSampleStyleSheet()
+    TERRA = colors.HexColor("#C85A32")
+    PALM = colors.HexColor("#2D5A43")
+    SAND = colors.HexColor("#F4EFE6")
+    story = []
+
+    # Header
+    logo_url = (settings.get("logo_url") or "").strip()
+    header_cells = []
+    try:
+        if logo_url.startswith("/api/files/"):
+            path = logo_url.split("/api/files/", 1)[1]
+            b, _ = get_object(path)
+            header_cells.append(RLImage(BytesIO(b), width=28*mm, height=28*mm))
+        elif logo_url:
+            lr = requests.get(logo_url, timeout=10)
+            header_cells.append(RLImage(BytesIO(lr.content), width=28*mm, height=28*mm))
+        else:
+            header_cells.append(Paragraph("", styles["Normal"]))
+    except Exception:
+        header_cells.append(Paragraph("", styles["Normal"]))
+    header_cells.append(Paragraph(
+        f"<font color='#C85A32'><b>{settings.get('name') or 'Pousada'}</b></font><br/>"
+        f"<font size=9 color='#57534E'>Voucher de Reserva</font>",
+        styles["Normal"],
+    ))
+    ht = Table([header_cells], colWidths=[32*mm, 130*mm])
+    ht.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
+    story.append(ht)
+    story.append(Spacer(1, 12))
+
+    def brl(v):
+        return f"R$ {float(v or 0):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    guest_style = ParagraphStyle("g", parent=styles["Normal"], fontSize=11, leading=16)
+    story.append(Paragraph(f"<b>Hóspede:</b> {r.get('guest_name','')}", guest_style))
+    story.append(Paragraph(f"<b>Documento:</b> {r.get('guest_document','')}", guest_style))
+    story.append(Paragraph(f"<b>Contato:</b> {r.get('guest_phone','')} · {r.get('guest_email','')}", guest_style))
+    story.append(Spacer(1, 8))
+
+    info = [
+        ["Quarto", room_name],
+        ["Check-in", f"{r.get('checkin_date','')} às {settings.get('checkin_time','14:00')}"],
+        ["Check-out", f"{r.get('checkout_date','')} às {settings.get('checkout_time','11:00')}"],
+        ["Adultos", str(r.get("adults", 1))],
+        ["Crianças 0-3", str(r.get("children_0_3", 0))],
+        ["Crianças 4-10", str(r.get("children_4_10", 0))],
+        ["Pets", f"P {r.get('pets_small',0)} · M {r.get('pets_medium',0)} · G {r.get('pets_large',0)}"],
+        ["Total", brl(r.get("total_amount", 0))],
+        ["Status", (r.get("status") or "").upper()],
+    ]
+    t = Table(info, colWidths=[45*mm, 120*mm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), SAND),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("PADDING", (0, 0), (-1, -1), 6),
+        ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#D1C6B4")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("FONTNAME", (0, -2), (-1, -2), "Helvetica-Bold"),
+        ("BACKGROUND", (0, -2), (-1, -2), TERRA),
+        ("TEXTCOLOR", (0, -2), (-1, -2), colors.white),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 14))
+
+    # Rules & PIX
+    story.append(Paragraph("<b>Regras da estadia</b>", ParagraphStyle("h", parent=styles["Heading3"], textColor=PALM, fontSize=12)))
+    story.append(Paragraph("• É totalmente proibido fumar dentro dos quartos.", styles["Normal"]))
+    if (r.get("pets_small", 0) + r.get("pets_medium", 0) + r.get("pets_large", 0)) > 0:
+        story.append(Paragraph("• O animal não pode dormir nas camas e qualquer dano ou avaria causada pelo animal é de inteira responsabilidade do tutor.", styles["Normal"]))
+    if settings.get("policies"):
+        story.append(Paragraph(f"• {settings.get('policies')}", styles["Normal"]))
+    story.append(Spacer(1, 10))
+
+    if settings.get("pix_key"):
+        story.append(Paragraph("<b>Pagamento via PIX</b>", ParagraphStyle("h2", parent=styles["Heading3"], textColor=PALM, fontSize=12)))
+        story.append(Paragraph(f"Chave ({settings.get('pix_key_type','')}): <font face='Courier'>{settings.get('pix_key')}</font>", styles["Normal"]))
+        story.append(Paragraph(f"Beneficiário: {settings.get('name','')}", styles["Normal"]))
+
+    story.append(Spacer(1, 18))
+    story.append(Paragraph(
+        f"<font size=8 color='#78716C'>Emitido em {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M UTC')} · {settings.get('address','')}</font>",
+        styles["Normal"],
+    ))
+    doc.build(story)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="voucher_{r.get("guest_name","hospede").split()[0]}_{r.get("checkin_date","")}.pdf"'},
+    )
 
 
 # ----- Finance PDF report -----

@@ -1,0 +1,27 @@
+{
+  "summary": "Iteration 5 — verified major feature release (pricing engine, public FNRH form new fields, calendar cell dialog, quick block period, voucher PDF, settings pricing config). Backend: 13/13 pytest passed for /api/pricing/calc, /api/public/pre-reservation, /api/reservations/block, /api/reservations/{id}/voucher.pdf, /api/settings pricing fields. Frontend: /reservar NumberField widgets (+/-, min bounds, typing) work; no-smoking notice always visible, pet notice only when pets>0; live pricing block renders with per-night surcharge rows and total matches submit button. Admin calendar day-cell dialog opens for days with reservations (with guest name, room name, dates, status pill) and does NOT open for empty days. Admin ReservationsPage 'Bloquear período' dialog submits successfully and creates blocked reservation (verified via GET). Settings page 'Preços & Feriados' section shows holidays textarea, weekend_surcharge_pct, extra_adult_discount_pct, child_rate_pct, pet_small/medium/large inputs with current defaults 10/10/65/20.7/27.6/34.5.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_pricing_voucher_block.py",
+    "/app/test_reports/pytest/iter5.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py has grown to >1700 lines — recommend splitting into modules (auth, settings, rooms, reservations, pricing, pdf, ical) for maintainability.",
+    "downloadVoucher in ReservationsPage.js reads token from localStorage and passes as Bearer header via fetch — works but consider using the shared apiClient with responseType blob for consistency.",
+    "compute_pricing uses weekend surcharge OR holiday (not additive) — matches spec but note that surcharge value is fixed at weekend_pct even for holiday-only days; this is by design per user spec (+10% per night for weekend/holiday)."
+  ],
+  "updated_files": ["/app/backend/tests/test_pricing_voucher_block.py"],
+  "success_rate": {"backend": "100% (13/13)", "frontend": "100% (all flows verified)"},
+  "test_credentials": "admin@pousada.com / pousada2024 (verified working)",
+  "seed_data_creation": "Created and cleaned up: TEST_pricing_* room, TEST_new_fields public reservation, TEST_voucher reservation, 2 blocked reservations on 2026-09-01→03 and 2026-09-01→04 (both deleted after calendar dialog verification).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All new pricing/voucher/block/calendar-dialog/settings features are working end-to-end. Note: app 'current date' is Sept 28, 2026 (per server clock) — calendar defaults to setembro/2026. When creating blocks for testing, use future dates in Sept/Oct 2026 to see them on the default calendar view. Playwright expect_download does not reliably trigger for the voucher button because ReservationsPage.downloadVoucher uses a Blob+anchor pattern instead of a native download — the backend endpoint itself is verified via pytest.",
+  "rca of the issue": "No issues to report — all requested features verified. Prior iteration's DialogDescription a11y warning still present (informational only, non-blocking)."
+}

@@ -15,6 +15,8 @@ import ICalPage from "@/pages/admin/ICalPage";
 import WhatsAppPage from "@/pages/admin/WhatsAppPage";
 import FinancePage from "@/pages/admin/FinancePage";
 import AccountPage from "@/pages/admin/AccountPage";
+import UsersPage from "@/pages/admin/UsersPage";
+import HeatmapPage from "@/pages/admin/HeatmapPage";
 
 function RequireAuth({ children }) {
   const { user, loading } = useAuth();
@@ -41,6 +43,8 @@ export default function App() {
             <Route path="ical" element={<ICalPage />} />
             <Route path="whatsapp" element={<WhatsAppPage />} />
             <Route path="finance" element={<FinancePage />} />
+            <Route path="heatmap" element={<HeatmapPage />} />
+            <Route path="users" element={<UsersPage />} />
             <Route path="account" element={<AccountPage />} />
           </Route>
         </Routes>

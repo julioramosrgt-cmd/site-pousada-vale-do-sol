@@ -5,9 +5,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Copy, Plus, Trash2, Save } from "lucide-react";
+import { Copy, Plus, Trash2, Save, QrCode } from "lucide-react";
 
-const TAGS = ["{nome}", "{quarto}", "{checkin}", "{checkout}", "{valor}", "{chave_pix}", "{checkin_time}", "{endereco}", "{whatsapp}"];
+const TAGS = ["{nome}", "{quarto}", "{checkin}", "{checkout}", "{valor}", "{chave_pix}", "{pix_copia_cola}", "{checkin_time}", "{endereco}", "{whatsapp}"];
 
 export default function WhatsAppPage() {
   const [rows, setRows] = useState([]);
@@ -15,6 +15,8 @@ export default function WhatsAppPage() {
   const [vars, setVars] = useState({ nome: "", quarto: "", checkin: "", checkout: "", valor: "" });
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({ title: "", body: "" });
+  const [pix, setPix] = useState(null);
+  const [genLoading, setGenLoading] = useState(false);
 
   const load = async () => {
     const [t, s] = await Promise.all([api.get("/whatsapp/templates"), api.get("/settings")]);
@@ -43,6 +45,7 @@ export default function WhatsAppPage() {
     const context = {
       ...vars,
       chave_pix: settings.pix_key || "",
+      pix_copia_cola: pix?.brcode || "",
       checkin_time: settings.checkin_time || "",
       endereco: settings.address || "",
       whatsapp: settings.whatsapp || "",
@@ -50,6 +53,18 @@ export default function WhatsAppPage() {
     let out = body;
     Object.entries(context).forEach(([k, v]) => { out = out.split(`{${k}}`).join(v || `{${k}}`); });
     return out;
+  };
+
+  const genPix = async () => {
+    setGenLoading(true);
+    try {
+      const amount = vars.valor ? parseFloat(vars.valor) : null;
+      const r = await api.post("/pix/brcode", { amount });
+      setPix(r.data);
+      toast.success("PIX Copia-e-Cola gerado");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Configure a chave PIX em Site & Galeria");
+    } finally { setGenLoading(false); }
   };
 
   const copy = async (text) => { await navigator.clipboard.writeText(text); toast.success("Copiado"); };
@@ -105,8 +120,32 @@ export default function WhatsAppPage() {
               <div key={k}><Label className="capitalize">{k}</Label><Input value={vars[k]} onChange={(e) => setVars({ ...vars, [k]: e.target.value })} /></div>
             ))}
           </div>
+
+          <div className="rounded-xl border border-dashed border-stone-300 p-3 mb-4 bg-stone-50/60">
+            <div className="flex items-center justify-between mb-2">
+              <div>
+                <div className="text-xs uppercase tracking-widest text-amber-800/70">PIX Copia-e-Cola</div>
+                <div className="text-xs text-stone-500">Cole `{`{pix_copia_cola}`}` no template para incluir no envio</div>
+              </div>
+              <Button size="sm" variant="outline" onClick={genPix} disabled={genLoading} data-testid="btn-gen-pix">
+                <QrCode className="w-4 h-4 mr-1" />{genLoading ? "Gerando..." : "Gerar QR + código"}
+              </Button>
+            </div>
+            {pix && (
+              <div className="mt-3 flex flex-col sm:flex-row gap-4 items-start">
+                <img src={pix.qr_png_base64} alt="QR PIX" className="w-40 h-40 rounded-lg border border-stone-200" data-testid="pix-qr-img" />
+                <div className="flex-1 min-w-0">
+                  <div className="font-mono text-xs break-all bg-white border border-stone-200 rounded-lg p-3" data-testid="pix-brcode">{pix.brcode}</div>
+                  <div className="mt-2 flex gap-2">
+                    <Button size="sm" variant="outline" onClick={() => { navigator.clipboard.writeText(pix.brcode); toast.success("Copia-e-Cola copiado"); }}><Copy className="w-3 h-3 mr-1" />Copiar código</Button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
           {editing || form.body ? (
-            <div className="rounded-2xl bg-[#DCF8C6] p-4 whitespace-pre-line font-sans text-stone-800 shadow-inner" data-testid="tpl-preview">
+            <div className="rounded-2xl bg-[#DCF8C6] p-4 whitespace-pre-line font-sans text-stone-800 shadow-inner break-words" data-testid="tpl-preview">
               {render(form.body)}
             </div>
           ) : <p className="text-stone-500">Selecione ou crie um template para pré-visualizar.</p>}

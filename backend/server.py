@@ -14,8 +14,18 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta, date
 from typing import List, Optional, Annotated
 
+import base64
+from io import BytesIO
+import re
+import ipaddress
+from html import escape
+from html.parser import HTMLParser
+from urllib.parse import urlparse
+
 import bcrypt
+import httpx
 import jwt
+import qrcode
 import requests
 from icalendar import Calendar, Event
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, UploadFile, File, Query, Header, Response, status
@@ -44,6 +54,12 @@ STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https
 STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
 EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
 _storage_key = None
+
+# Emergent managed email
+EMAIL_BASE_URL = "https://integrations.emergentagent.com"
+EMAIL_KEY = os.environ.get("EMERGENT_EMAIL_KEY")
+EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "Pousada")
+EMAIL_REPLY_TO = os.environ.get("EMAIL_REPLY_TO")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("pousada")
@@ -85,6 +101,7 @@ oauth2 = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
 
 async def require_admin(token: Optional[str] = Depends(oauth2)):
+    """Any authenticated staff user (admin or reception)."""
     if not token:
         raise HTTPException(401, "Não autenticado")
     try:
@@ -94,6 +111,13 @@ async def require_admin(token: Optional[str] = Depends(oauth2)):
     user = await db.users.find_one({"id": payload["sub"], "is_deleted": {"$ne": True}}, {"_id": 0})
     if not user:
         raise HTTPException(401, "Usuário não encontrado")
+    return user
+
+
+async def require_admin_role(user=Depends(require_admin)):
+    """Only admin role (blocks reception)."""
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Apenas administradores")
     return user
 
 
@@ -445,7 +469,7 @@ async def admin_get_settings(user=Depends(require_admin)):
 
 
 @api.put("/settings")
-async def admin_put_settings(data: SettingsIn, user=Depends(require_admin)):
+async def admin_put_settings(data: SettingsIn, user=Depends(require_admin_role)):
     doc = data.model_dump()
     doc["id"] = "singleton"
     doc["updated_at"] = now_iso()
@@ -467,7 +491,7 @@ async def gallery_list(user=Depends(require_admin)):
 
 
 @api.post("/gallery")
-async def gallery_add(data: GalleryIn, user=Depends(require_admin)):
+async def gallery_add(data: GalleryIn, user=Depends(require_admin_role)):
     item = GalleryItem(**data.model_dump()).model_dump()
     item["is_deleted"] = False
     item["created_at"] = now_iso()
@@ -476,7 +500,7 @@ async def gallery_add(data: GalleryIn, user=Depends(require_admin)):
 
 
 @api.delete("/gallery/{item_id}")
-async def gallery_delete(item_id: str, user=Depends(require_admin)):
+async def gallery_delete(item_id: str, user=Depends(require_admin_role)):
     await db.gallery.update_one({"id": item_id}, {"$set": {"is_deleted": True}})
     return {"ok": True}
 
@@ -522,7 +546,7 @@ async def rooms_list(user=Depends(require_admin)):
 
 
 @api.post("/rooms")
-async def rooms_create(data: RoomIn, user=Depends(require_admin)):
+async def rooms_create(data: RoomIn, user=Depends(require_admin_role)):
     room = Room(**data.model_dump()).model_dump()
     room["is_deleted"] = False
     await db.rooms.insert_one(room)
@@ -530,7 +554,7 @@ async def rooms_create(data: RoomIn, user=Depends(require_admin)):
 
 
 @api.put("/rooms/{room_id}")
-async def rooms_update(room_id: str, data: RoomIn, user=Depends(require_admin)):
+async def rooms_update(room_id: str, data: RoomIn, user=Depends(require_admin_role)):
     update = data.model_dump()
     update["updated_at"] = now_iso()
     result = await db.rooms.update_one({"id": room_id}, {"$set": update})
@@ -541,7 +565,7 @@ async def rooms_update(room_id: str, data: RoomIn, user=Depends(require_admin)):
 
 
 @api.delete("/rooms/{room_id}")
-async def rooms_delete(room_id: str, user=Depends(require_admin)):
+async def rooms_delete(room_id: str, user=Depends(require_admin_role)):
     await db.rooms.update_one({"id": room_id}, {"$set": {"is_deleted": True}})
     return {"ok": True}
 
@@ -605,6 +629,143 @@ async def reservations_delete(res_id: str, user=Depends(require_admin)):
     return {"ok": True}
 
 
+# ----- Email (Resend via Emergent proxy) -----
+_SHORTENERS = ("bit.ly", "tinyurl.com", "t.co", "is.gd", "cutt.ly", "goo.gl", "rebrand.ly")
+_CRED_ASK = ("reply with your password", "reply with the code", "send your password", "cvv",
+             "send us your password", "enter your password below", "confirm your card number",
+             "your full card number", "seed phrase", "recovery phrase", "verify your card",
+             "social security number", "confirm your bank details")
+_HOSTISH = re.compile(r"\b(?:https?://)?((?:[a-z0-9-]+\.)+[a-z]{2,})", re.I)
+
+
+def _host_ok(host: str) -> bool:
+    if not host or "xn--" in host:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return False
+    except ValueError:
+        pass
+    return not any(host == s or host.endswith("." + s) for s in _SHORTENERS)
+
+
+def _same_site(shown: str, real: str) -> bool:
+    return shown == real or real.endswith("." + shown) or shown.endswith("." + real)
+
+
+class _EmailScan(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.tags, self.urls, self.anchors = set(), [], []
+        self._href, self._text = None, []
+
+    def handle_starttag(self, tag, attrs):
+        self.tags.add(tag.lower())
+        self.urls += [v for k, v in attrs if k.lower() in ("href", "src") and v]
+        if tag.lower() == "a":
+            self._href = dict((k.lower(), v) for k, v in attrs).get("href")
+            self._text = []
+
+    def handle_data(self, data):
+        if self._href is not None:
+            self._text.append(data)
+
+    def handle_endtag(self, tag):
+        if tag.lower() == "a" and self._href is not None:
+            self.anchors.append((self._href, "".join(self._text)))
+            self._href, self._text = None, []
+
+
+def _assert_safe_email(subject: str, html: str) -> None:
+    scan = _EmailScan(); scan.feed(html)
+    if scan.tags & {"form", "input", "textarea", "select"}:
+        raise ValueError("No forms or input fields in email (G2)")
+    body = f"{subject}\n{html}".lower()
+    for p in _CRED_ASK:
+        if p in body:
+            raise ValueError(f"Email asks the recipient for credentials: {p!r} (G2)")
+    for url in scan.urls:
+        low = url.strip().lower()
+        if low.startswith(("mailto:", "tel:", "cid:", "#")):
+            continue
+        if not low.startswith("https://"):
+            raise ValueError(f"Email links/assets must be absolute https: {url!r} (G3)")
+        host = urlparse(low).hostname or ""
+        if not _host_ok(host) or urlparse(low).username is not None:
+            raise ValueError(f"Shortened, numeric-host or credential-bearing URL: {url!r} (G3)")
+    for href, text in scan.anchors:
+        real = urlparse(href.strip().lower()).hostname or ""
+        if not real:
+            continue
+        for m in _HOSTISH.finditer(text):
+            if not _same_site(m.group(1).lower(), real):
+                raise ValueError(f"Anchor text {m.group(1)!r} ≠ real link host {real!r} (G3)")
+
+
+async def send_email(*, to: str, subject: str, html: str, reply_to: Optional[str] = None) -> Optional[str]:
+    if not EMAIL_KEY:
+        logger.warning("EMERGENT_EMAIL_KEY missing; skipping email send")
+        return None
+    _assert_safe_email(subject, html)
+    payload = {"to": [to], "subject": subject, "html": html, "from_name": EMAIL_FROM_NAME}
+    if reply_to or EMAIL_REPLY_TO:
+        payload["contact_email"] = reply_to or EMAIL_REPLY_TO
+    try:
+        async with httpx.AsyncClient(timeout=30) as clientx:
+            resp = await clientx.post(
+                f"{EMAIL_BASE_URL}/api/v1/email/send",
+                headers={"X-Email-Key": EMAIL_KEY},
+                json=payload,
+            )
+        resp.raise_for_status()
+        return resp.json().get("id")
+    except Exception as e:
+        logger.error(f"Email send failed: {e}")
+        return None
+
+
+def _guest_email_html(settings: dict, r: dict, room_name: str) -> str:
+    name = escape(r.get("guest_name") or "")
+    ci = escape(r.get("checkin_date") or "")
+    co = escape(r.get("checkout_date") or "")
+    inn = escape(settings.get("name") or EMAIL_FROM_NAME)
+    room = escape(room_name or "—")
+    return (
+        f'<table role="presentation" width="100%" style="max-width:560px;margin:0 auto">'
+        f'<tr><td style="padding:24px;font-family:Arial,sans-serif;color:#1c1917">'
+        f'<h2 style="color:#C85A32;margin:0 0 12px">Pré-reserva recebida</h2>'
+        f'<p>Olá {name}, obrigado por escolher a <strong>{inn}</strong>!</p>'
+        f'<p>Recebemos sua pré-reserva para <strong>{ci}</strong> até <strong>{co}</strong>'
+        f' — quarto preferido: {room}. Nossa equipe confirma disponibilidade e envia os próximos passos em breve.</p>'
+        f'<p style="font-size:12px;color:#888">Enviado por {inn}. Nunca pedimos senhas ou dados de cartão por e-mail.</p>'
+        f'</td></tr></table>'
+    )
+
+
+def _owner_email_html(settings: dict, r: dict, room_name: str) -> str:
+    name = escape(r.get("guest_name") or "")
+    email = escape(r.get("guest_email") or "")
+    phone = escape(r.get("guest_phone") or "")
+    ci = escape(r.get("checkin_date") or "")
+    co = escape(r.get("checkout_date") or "")
+    adults = escape(str(r.get("adults") or 1))
+    children = escape(str(r.get("children") or 0))
+    inn = escape(settings.get("name") or EMAIL_FROM_NAME)
+    room = escape(room_name or "—")
+    return (
+        f'<table role="presentation" width="100%" style="max-width:560px;margin:0 auto">'
+        f'<tr><td style="padding:24px;font-family:Arial,sans-serif;color:#1c1917">'
+        f'<h2 style="color:#2D5A43;margin:0 0 12px">Nova pré-reserva</h2>'
+        f'<p><strong>Hóspede:</strong> {name}<br>'
+        f'<strong>Contato:</strong> {phone} · {email}<br>'
+        f'<strong>Datas:</strong> {ci} → {co}<br>'
+        f'<strong>Quarto:</strong> {room}<br>'
+        f'<strong>Pessoas:</strong> {adults} adultos, {children} crianças</p>'
+        f'<p style="font-size:12px;color:#888">Enviado por {inn}. Abra o painel para confirmar.</p>'
+        f'</td></tr></table>'
+    )
+
+
 # ----- PUBLIC pre-reservation (write-only) -----
 @api.post("/public/pre-reservation")
 async def public_pre_reservation(data: PublicReservationIn):
@@ -617,13 +778,218 @@ async def public_pre_reservation(data: PublicReservationIn):
     ).model_dump()
     r["is_deleted"] = False
     await db.reservations.insert_one(r)
-    # Return only a confirmation, no sensitive listing
+
+    # Fire-and-forget emails
+    try:
+        settings = await db.settings.find_one({"id": "singleton"}, {"_id": 0}) or {}
+        room_name = "—"
+        if r.get("room_id"):
+            room = await db.rooms.find_one({"id": r["room_id"]}, {"_id": 0})
+            if room:
+                room_name = room.get("name") or "—"
+        if r.get("guest_email"):
+            asyncio.create_task(send_email(
+                to=r["guest_email"],
+                subject=f"Pré-reserva recebida — {settings.get('name') or EMAIL_FROM_NAME}",
+                html=_guest_email_html(settings, r, room_name),
+            ))
+        if settings.get("email"):
+            asyncio.create_task(send_email(
+                to=settings["email"],
+                subject=f"Nova pré-reserva: {r.get('guest_name')}",
+                html=_owner_email_html(settings, r, room_name),
+            ))
+    except Exception as e:
+        logger.warning(f"pre-reservation email dispatch failed: {e}")
+
     return {"ok": True, "reservation_id": r["id"], "message": "Pré-reserva recebida. Aguarde contato para confirmação."}
+
+
+# ----- Users management (admin only) -----
+class UserCreateIn(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=6)
+    role: str = "reception"  # admin | reception
+
+
+class UserUpdateIn(BaseModel):
+    role: Optional[str] = None
+    password: Optional[str] = None
+
+
+@api.get("/users")
+async def users_list(user=Depends(require_admin_role)):
+    rows = await db.users.find({"is_deleted": {"$ne": True}}, {"_id": 0, "password_hash": 0}).to_list(200)
+    return [clean_doc(r) for r in rows]
+
+
+@api.post("/users")
+async def users_create(data: UserCreateIn, user=Depends(require_admin_role)):
+    if data.role not in {"admin", "reception"}:
+        raise HTTPException(400, "Perfil inválido")
+    existing = await db.users.find_one({"email": data.email.lower(), "is_deleted": {"$ne": True}})
+    if existing:
+        raise HTTPException(400, "E-mail já cadastrado")
+    doc = {
+        "id": new_id(),
+        "email": data.email.lower(),
+        "password_hash": hash_password(data.password),
+        "role": data.role,
+        "is_deleted": False,
+        "created_at": now_iso(),
+    }
+    await db.users.insert_one(doc)
+    return {"id": doc["id"], "email": doc["email"], "role": doc["role"]}
+
+
+@api.put("/users/{user_id}")
+async def users_update(user_id: str, data: UserUpdateIn, user=Depends(require_admin_role)):
+    update: dict = {}
+    if data.role:
+        if data.role not in {"admin", "reception"}:
+            raise HTTPException(400, "Perfil inválido")
+        update["role"] = data.role
+    if data.password:
+        if len(data.password) < 6:
+            raise HTTPException(400, "Senha muito curta")
+        update["password_hash"] = hash_password(data.password)
+    if not update:
+        raise HTTPException(400, "Nada para atualizar")
+    result = await db.users.update_one({"id": user_id, "is_deleted": {"$ne": True}}, {"$set": update})
+    if result.matched_count == 0:
+        raise HTTPException(404, "Usuário não encontrado")
+    return {"ok": True}
+
+
+@api.delete("/users/{user_id}")
+async def users_delete(user_id: str, user=Depends(require_admin_role)):
+    if user_id == user["id"]:
+        raise HTTPException(400, "Não é possível excluir o próprio usuário")
+    # Prevent deleting the last admin
+    other_admins = await db.users.count_documents({"role": "admin", "is_deleted": {"$ne": True}, "id": {"$ne": user_id}})
+    target = await db.users.find_one({"id": user_id})
+    if target and target.get("role") == "admin" and other_admins == 0:
+        raise HTTPException(400, "É necessário manter pelo menos um administrador")
+    await db.users.update_one({"id": user_id}, {"$set": {"is_deleted": True}})
+    return {"ok": True}
+
+
+# ----- Occupancy heatmap -----
+@api.get("/reports/occupancy")
+async def occupancy_heatmap(user=Depends(require_admin), year: Optional[int] = None, month: Optional[int] = None):
+    today = date.today()
+    y = year or today.year
+    m = month or today.month
+    start = date(y, m, 1)
+    end = date(y + (1 if m == 12 else 0), 1 if m == 12 else m + 1, 1)
+    rooms = await db.rooms.find({"is_deleted": {"$ne": True}}, {"_id": 0, "ical_token": 0}).to_list(500)
+    reservations = await db.reservations.find(
+        {"is_deleted": {"$ne": True}, "checkin_date": {"$lt": end.isoformat()}, "checkout_date": {"$gt": start.isoformat()}},
+        {"_id": 0},
+    ).to_list(5000)
+
+    days = (end - start).days
+    # Build room -> [status per day]
+    matrix = {r["id"]: ["free"] * days for r in rooms}
+    for r in reservations:
+        rid = r.get("room_id")
+        if rid not in matrix:
+            continue
+        try:
+            ci = max(date.fromisoformat(r["checkin_date"]), start)
+            co = min(date.fromisoformat(r["checkout_date"]), end)
+        except Exception:
+            continue
+        for d in range((co - ci).days):
+            idx = (ci - start).days + d
+            if 0 <= idx < days:
+                # priority: confirmed/checked_in > pending > blocked/maintenance
+                current = matrix[rid][idx]
+                new = r.get("status", "pending")
+                priority = {"free": 0, "pending": 1, "blocked": 2, "maintenance": 2, "confirmed": 3, "checked_in": 3, "checked_out": 3, "cancelled": 0}
+                if priority.get(new, 0) > priority.get(current, 0):
+                    matrix[rid][idx] = new
+
+    return {
+        "year": y, "month": m, "days": days,
+        "rooms": [{"id": r["id"], "name": r["name"], "cells": matrix[r["id"]]} for r in rooms],
+    }
+
+
+# ----- PIX BR Code (Copia-e-Cola + QR) -----
+def _tlv(tag: str, value: str) -> str:
+    return f"{tag}{len(value):02d}{value}"
+
+
+def _crc16_ccitt(data: str) -> str:
+    crc = 0xFFFF
+    for byte in data.encode("utf-8"):
+        crc ^= byte << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) if (crc & 0x8000) else (crc << 1)
+            crc &= 0xFFFF
+    return f"{crc:04X}"
+
+
+def _strip_accents(s: str) -> str:
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
+
+
+def build_pix_brcode(pix_key: str, merchant_name: str = "POUSADA", merchant_city: str = "BRASIL", amount: Optional[float] = None, txid: str = "***") -> str:
+    if not pix_key:
+        return ""
+    mai = _tlv("00", "br.gov.bcb.pix") + _tlv("01", pix_key)
+    payload = (
+        _tlv("00", "01")
+        + _tlv("26", mai)
+        + _tlv("52", "0000")
+        + _tlv("53", "986")
+        + (_tlv("54", f"{amount:.2f}") if amount and amount > 0 else "")
+        + _tlv("58", "BR")
+        + _tlv("59", _strip_accents(merchant_name)[:25] or "POUSADA")
+        + _tlv("60", _strip_accents(merchant_city)[:15] or "BRASIL")
+        + _tlv("62", _tlv("05", txid[:25] or "***"))
+    )
+    payload += "6304"
+    return payload + _crc16_ccitt(payload)
+
+
+class PixIn(BaseModel):
+    amount: Optional[float] = None
+    txid: Optional[str] = "***"
+
+
+@api.post("/pix/brcode")
+async def pix_brcode(data: PixIn, user=Depends(require_admin)):
+    settings = await db.settings.find_one({"id": "singleton"}, {"_id": 0}) or {}
+    key = (settings.get("pix_key") or "").strip()
+    if not key:
+        raise HTTPException(400, "Chave PIX não configurada em Site & Galeria")
+    name = settings.get("name") or "POUSADA"
+    city = "BRASIL"
+    if settings.get("address"):
+        parts = [p.strip() for p in settings["address"].split(",") if p.strip()]
+        if parts:
+            city = parts[-1]
+    payload = build_pix_brcode(key, name, city, data.amount, data.txid or "***")
+    # Generate QR PNG (base64)
+    img = qrcode.make(payload)
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    return {
+        "brcode": payload,
+        "qr_png_base64": f"data:image/png;base64,{b64}",
+        "amount": data.amount,
+        "pix_key": key,
+        "merchant_name": name,
+    }
 
 
 # ----- Finance -----
 @api.get("/finance")
-async def finance_list(user=Depends(require_admin), from_date: Optional[str] = None, to_date: Optional[str] = None):
+async def finance_list(user=Depends(require_admin_role), from_date: Optional[str] = None, to_date: Optional[str] = None):
     q: dict = {"is_deleted": {"$ne": True}}
     if from_date or to_date:
         q["entry_date"] = {}
@@ -636,7 +1002,7 @@ async def finance_list(user=Depends(require_admin), from_date: Optional[str] = N
 
 
 @api.post("/finance")
-async def finance_create(data: FinanceIn, user=Depends(require_admin)):
+async def finance_create(data: FinanceIn, user=Depends(require_admin_role)):
     if data.kind not in {"income", "expense"}:
         raise HTTPException(400, "Tipo inválido")
     entry = FinanceEntry(**data.model_dump()).model_dump()
@@ -646,13 +1012,13 @@ async def finance_create(data: FinanceIn, user=Depends(require_admin)):
 
 
 @api.delete("/finance/{entry_id}")
-async def finance_delete(entry_id: str, user=Depends(require_admin)):
+async def finance_delete(entry_id: str, user=Depends(require_admin_role)):
     await db.finance.update_one({"id": entry_id}, {"$set": {"is_deleted": True}})
     return {"ok": True}
 
 
 @api.get("/finance/export.csv")
-async def finance_export_csv(user=Depends(require_admin), from_date: Optional[str] = None, to_date: Optional[str] = None):
+async def finance_export_csv(user=Depends(require_admin_role), from_date: Optional[str] = None, to_date: Optional[str] = None):
     q: dict = {"is_deleted": {"$ne": True}}
     if from_date or to_date:
         q["entry_date"] = {}
@@ -680,7 +1046,7 @@ async def finance_export_csv(user=Depends(require_admin), from_date: Optional[st
 
 
 @api.get("/finance/monthly")
-async def finance_monthly(user=Depends(require_admin), months: int = 6):
+async def finance_monthly(user=Depends(require_admin_role), months: int = 6):
     """Aggregate income/expense per month for the last N months."""
     today = date.today()
     year, month = today.year, today.month
@@ -710,7 +1076,7 @@ async def finance_monthly(user=Depends(require_admin), months: int = 6):
 
 
 @api.get("/finance/summary")
-async def finance_summary(user=Depends(require_admin), from_date: Optional[str] = None, to_date: Optional[str] = None):
+async def finance_summary(user=Depends(require_admin_role), from_date: Optional[str] = None, to_date: Optional[str] = None):
     q: dict = {"is_deleted": {"$ne": True}}
     if from_date or to_date:
         q["entry_date"] = {}
@@ -799,7 +1165,7 @@ async def ical_sources_list(user=Depends(require_admin)):
 
 
 @api.post("/ical/sources")
-async def ical_sources_add(data: ICalSourceIn, user=Depends(require_admin)):
+async def ical_sources_add(data: ICalSourceIn, user=Depends(require_admin_role)):
     s = ICalImportSource(**data.model_dump()).model_dump()
     s["is_deleted"] = False
     await db.ical_sources.insert_one(s)
@@ -807,7 +1173,7 @@ async def ical_sources_add(data: ICalSourceIn, user=Depends(require_admin)):
 
 
 @api.delete("/ical/sources/{source_id}")
-async def ical_sources_delete(source_id: str, user=Depends(require_admin)):
+async def ical_sources_delete(source_id: str, user=Depends(require_admin_role)):
     await db.ical_sources.update_one({"id": source_id}, {"$set": {"is_deleted": True}})
     return {"ok": True}
 

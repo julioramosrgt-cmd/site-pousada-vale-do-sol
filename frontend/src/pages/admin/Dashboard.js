@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/apiClient";
 import { Link } from "react-router-dom";
+import { useAuth } from "@/lib/auth";
 import { BedDouble, ClipboardList, Wallet, TrendingUp } from "lucide-react";
 
 const StatCard = ({ icon: Icon, label, value, color }) => (
@@ -14,6 +15,8 @@ const StatCard = ({ icon: Icon, label, value, color }) => (
 );
 
 export default function Dashboard() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const [summary, setSummary] = useState(null);
   const [pending, setPending] = useState([]);
   const [rooms, setRooms] = useState([]);
@@ -22,10 +25,12 @@ export default function Dashboard() {
     const today = new Date();
     const from = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
     const to = new Date(today.getFullYear(), today.getMonth() + 1, 0).toISOString().slice(0, 10);
-    api.get(`/finance/summary?from_date=${from}&to_date=${to}`).then((r) => setSummary(r.data));
-    api.get(`/reservations?status=pending`).then((r) => setPending(r.data));
-    api.get(`/rooms`).then((r) => setRooms(r.data));
-  }, []);
+    api.get(`/reservations?status=pending`).then((r) => setPending(r.data)).catch(() => {});
+    api.get(`/rooms`).then((r) => setRooms(r.data)).catch(() => {});
+    if (isAdmin) {
+      api.get(`/finance/summary?from_date=${from}&to_date=${to}`).then((r) => setSummary(r.data)).catch(() => {});
+    }
+  }, [isAdmin]);
 
   return (
     <div>
@@ -39,8 +44,8 @@ export default function Dashboard() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard icon={BedDouble} label="Quartos" value={rooms.length} color="#C85A32" />
         <StatCard icon={ClipboardList} label="Pré-reservas" value={pending.length} color="#ED6C02" />
-        <StatCard icon={Wallet} label="Receita mês" value={`R$ ${summary?.income?.toFixed(0) ?? "0"}`} color="#2D5A43" />
-        <StatCard icon={TrendingUp} label="Ocupação" value={`${summary?.occupancy ?? 0}%`} color="#D99B26" />
+        {isAdmin && <StatCard icon={Wallet} label="Receita mês" value={`R$ ${summary?.income?.toFixed(0) ?? "0"}`} color="#2D5A43" />}
+        {isAdmin && <StatCard icon={TrendingUp} label="Ocupação" value={`${summary?.occupancy ?? 0}%`} color="#D99B26" />}
       </div>
 
       <div className="grid lg:grid-cols-2 gap-6 mt-8">
@@ -64,6 +69,7 @@ export default function Dashboard() {
             </ul>
           )}
         </div>
+        {isAdmin && (
         <div className="rounded-2xl bg-white border border-stone-200/70 p-6 shadow-warm">
           <h3 className="font-serif text-xl">Resumo financeiro do mês</h3>
           <div className="mt-4 space-y-3 text-sm">
@@ -74,6 +80,7 @@ export default function Dashboard() {
           </div>
           <Link to="/admin/finance" className="btn-terra inline-flex mt-5 rounded-xl px-4 py-2 text-sm">Ver financeiro</Link>
         </div>
+        )}
       </div>
     </div>
   );

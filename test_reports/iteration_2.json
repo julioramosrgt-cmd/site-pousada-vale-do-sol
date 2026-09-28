@@ -1,0 +1,45 @@
+{
+  "summary": "Iteration 2 focused on the 4 new modules: pre-reservation emails, Users CRUD RBAC, Occupancy heatmap, and PIX BR Code generator. Backend: 16/16 pytest cases pass. Frontend: admin flows (Users create + role select + reset-password dialog, Heatmap render + prev/next nav, WhatsApp PIX QR generation) all work; Reception sidebar correctly hides Ocupação/Quartos/Site/iCal/Financeiro/Usuários and shows Visão Geral/Calendário/Reservas/WhatsApp/Conta. One integration issue: Visão Geral (dashboard) fires 403s for reception (likely calls finance/summary or rooms) triggering an unhandled-rejection toast overlay.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Reception → Visão Geral dashboard",
+        "issue": "Dashboard performs at least one admin-only GET (finance/summary or similar) that returns 403 for reception; unhandled promise rejection surfaces as a global Emergent error dialog on first load after login.",
+        "affected_selectors": ["nav-dashboard"]
+      }
+    ],
+    "design_issues": [
+      {
+        "screen": "Users dialog",
+        "issues": ["DialogContent missing aria-describedby / Description (accessibility warning in console). Minor a11y polish."]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/iter2.xml"
+  ],
+  "action_items": [
+    "In DashboardPage (Visão Geral), guard finance/rooms admin-only calls behind role check or handle 403 silently so reception users don't see the global unhandled-rejection dialog.",
+    "Optional: add DialogDescription to user dialogs to remove Radix a11y console warning."
+  ],
+  "critical_code_review_comments": [
+    "server.py is ~1300 lines; consider splitting into modules (auth, users, reservations, finance, ical, pix, email) as it grows.",
+    "Occupancy heatmap: uses in-memory priority map – correct and O(rooms*res*days). Fine for expected pousada size.",
+    "PIX brcode: CRC16-CCITT computed correctly (verified against local recomputation with amount=250.50).",
+    "Emails: safe-email guardrail (_assert_safe_email) enforces https-only + no forms + no credential prompts; both templates pass."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100% (16/16)", "frontend": "95% (1 non-blocking dashboard 403 toast for reception)"},
+  "test_credentials": "admin@pousada.com/pousada2024, recepcao@pousada.com/recep123",
+  "seed_data_creation": "Created transient TEST_ users/rooms/reservations during tests – all cleaned up or soft-deleted where possible.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "All 4 new modules verified end-to-end. Only follow-up: reception dashboard triggers 403 toast. If main agent guards admin-only calls, re-run frontend reception smoke to confirm no error dialog appears on /admin.",
+  "rca of the issue": "Reception 403 dashboard toast: DashboardPage on load calls admin-role-restricted endpoints (finance/summary, finance/monthly, or rooms admin list). Backend correctly returns 403; frontend does not swallow the rejection so global error boundary surfaces it. Mitigation: check user.role before dispatching those calls, or wrap in try/catch to noop for reception."
+}

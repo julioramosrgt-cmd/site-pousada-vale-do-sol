@@ -1,0 +1,140 @@
+{
+  "project_title": "Pousada Management System (Sistema de Gestão de Pousada)",
+  "language": "pt-BR",
+  "app_type": "hybrid_fullstack",
+  "archetype": "ORGANIC & EARTHY - BRAZILIAN POUSADA BOUTIQUE",
+  "aesthetic_summary": "A warm, hospitality-first aesthetic inspired by Brazilian coastal and mountain inns (Búzios, Paraty, Gramado, Trancoso). Combines warm terracotta, sand beige, deep palm green, and rich espresso with a clean, high-density tactical admin dashboard. Avoids generic blue/purple SaaS gradients.",
+  "forbidden_colors": ["#7351B7", "#1B93A4"],
+  "responsive": {
+    "breakpoint": "mobile-first",
+    "layout": "Mobile viewport prioritized (375px-430px). Navigation transforms into a sleek bottom sheet or slide-out menu. Calendar switches seamlessly between full monthly matrix on desktop to compact single-row weekly view or vertical agenda view on mobile screens. Multi-column financial metrics wrap into single vertical cards. Tap targets are at least 44x44px with 16px min form inputs to avoid automatic iOS browser zoom.",
+    "typography": "Fluid scaling using rems and clamp(). Mobile main headings text-3xl to text-4xl, desktop text-5xl. Subtitles scale down cleanly.",
+    "overflow_guard": "Strict overflow-x-hidden on root. Calendar grids employ inner scrolling with shadow indicators for swipeability.",
+    "tap_targets": "Minimum 44px x 44px for buttons, status toggles, calendar date cells, and mobile table row actions."
+  },
+  "typography": {
+    "fonts": {
+      "heading": "'Playfair Display', 'Cormorant Garamond', serif",
+      "subheading_ui": "'Outfit', 'Plus Jakarta Sans', sans-serif",
+      "body": "'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif",
+      "mono_financial": "'JetBrains Mono', 'Source Code Pro', monospace"
+    },
+    "scale": {
+      "h1_hero": "text-3xl sm:text-5xl lg:text-6xl font-serif tracking-tight text-stone-900 dark:text-stone-100",
+      "h2_section": "text-2xl sm:text-3xl lg:text-4xl font-serif text-stone-900 dark:text-stone-100",
+      "h3_card": "text-lg sm:text-xl font-semibold font-sans text-stone-800 dark:text-stone-200",
+      "body": "text-sm sm:text-base font-sans text-stone-600 dark:text-stone-300 leading-relaxed",
+      "caption": "text-xs font-medium uppercase tracking-wider text-amber-800/70 dark:text-amber-400/70"
+    }
+  },
+  "colors": {
+    "light": {
+      "bg_primary": "#FAF7F2",
+      "bg_surface": "#FFFFFF",
+      "bg_surface_elevated": "#F4EFE6",
+      "text_primary": "#1C1917",
+      "text_secondary": "#57534E",
+      "text_muted": "#78716C",
+      "brand_terracotta": "#C85A32",
+      "brand_terracotta_hover": "#B04B26",
+      "brand_palm_green": "#2D5A43",
+      "brand_sand_amber": "#D99B26",
+      "border_subtle": "#E7E0D3",
+      "border_strong": "#D1C6B4",
+      "status_confirmed": "#2E7D32",
+      "status_pending": "#ED6C02",
+      "status_checkin": "#0288D1",
+      "status_checkout": "#7B1FA2",
+      "status_cancelled": "#D32F2F",
+      "status_blocked": "#616161"
+    },
+    "dark": {
+      "bg_primary": "#12100E",
+      "bg_surface": "#1A1714",
+      "bg_surface_elevated": "#26221E",
+      "text_primary": "#F5F2EB",
+      "text_secondary": "#D6CEBF",
+      "text_muted": "#9E9484",
+      "brand_terracotta": "#E06D44",
+      "brand_terracotta_hover": "#F27E55",
+      "brand_palm_green": "#417A5D",
+      "brand_sand_amber": "#E2AA3B",
+      "border_subtle": "#332D27",
+      "border_strong": "#4A423A",
+      "status_confirmed": "#4CAF50",
+      "status_pending": "#FF9800",
+      "status_checkin": "#29B6F6",
+      "status_checkout": "#AB47BC",
+      "status_cancelled": "#EF5350",
+      "status_blocked": "#9E9E9E"
+    }
+  },
+  "visual_enhancers": {
+    "textures": "Subtle warm paper grain overlay on headers, glassmorphism card surfaces with border-amber-900/10 backdrop-blur-md",
+    "shadows": "Ambient warm shadows: shadow-[0_8px_30px_rgb(45,30,15,0.06)]",
+    "border_radii": {
+      "card": "rounded-2xl",
+      "button": "rounded-xl",
+      "badge": "rounded-full",
+      "input": "rounded-xl"
+    }
+  },
+  "media": {
+    "hero_pousada": "https://images.unsplash.com/photo-1683914791856-040e5de792b3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NzV8MHwxfHNlYXJjaHszfHxib3V0aXF1ZSUyMGhvdGVsJTIwdHJvcGljYWx8ZW58MHx8fHwxNzkwNTU0NTkwfDA&ixlib=rb-4.1.0&q=85",
+    "pool_garden": "https://images.unsplash.com/photo-1532323544230-7191fd51bc1b?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NzV8MHwxfHNlYXJjaHw0fHxib3V0aXF1ZSUyMGhvdGVsJTIwdHJvcGljYWx8ZW58MHx8fHwxNzkwNTU0NTkwfDA&ixlib=rb-4.1.0&q=85",
+    "room_chalet": "https://images.unsplash.com/photo-1618773928121-c32242e63f39?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MjJ8MHwxfHNlYXJjaHwxfHxjb3p5JTIwcm9vbSUyMGJlZCUyMGhvdGVsfGVufDB8fHx8MTc5MDU1NDU5MHww&ixlib=rb-4.1.0&q=85",
+    "room_master": "https://images.unsplash.com/photo-1711059985570-4c32ed12a12c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MjJ8MHwxfHNlYXJjaHwyfHxjb3p5JTIwcm9vbSUyMGJlZCUyMGhvdGVsfGVufDB8fHx8MTc5MDU1NDU5MHww&ixlib=rb-4.1.0&q=85",
+    "patio_lounge": "https://images.unsplash.com/photo-1683914791874-2dcb78e58e09?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NzV8MHwxfHNlYXJjaHwxfHxib3V0aXF1ZSUyMGhvdGVsJTIwdHJvcGljYWx8ZW58MHx8fHwxNzkwNTU0NTkwfDA&ixlib=rb-4.1.0&q=85"
+  },
+  "modules_and_components": {
+    "public_website": {
+      "path": "src/pages/PublicWebsite.js",
+      "features": ["Hero slider / video background", "Pousada Description & Amenities grid", "Interactive Photo Gallery", "Check-in / Check-out guidelines card", "Direct WhatsApp booking widget", "PIX Key display with instant copy button", "Location map & Social media links"]
+    },
+    "guest_fnrh_form": {
+      "path": "src/pages/GuestFNRH.js",
+      "features": ["Public pre-checkin form compliant with Embratur/FNRH", "Fields: Nome Completo, CPF/Passaporte, Nasc., Email, Celular, Endereço Residencial, Motivo da Viagem, Meio de Transporte", "Confirmation feedback with WhatsApp quick link"]
+    },
+    "admin_login": {
+      "path": "src/pages/AdminLogin.js",
+      "features": ["JWT Authentication", "Email & Password fields with password visibility toggle", "Role indicator (Admin vs Recepção)"]
+    },
+    "unified_calendar": {
+      "path": "src/components/admin/UnifiedCalendar.js",
+      "features": ["Month / Week / Day views", "Color coded by reservation status (Confirmada, Pendente, Check-in, Check-out, Cancelada, Bloqueado)", "Quick click on date/room cell to create new reservation", "Filter by room category", "Mobile-optimized weekly slider view"]
+    },
+    "direct_reservations": {
+      "path": "src/components/admin/DirectReservationModal.js",
+      "features": ["Manual guest entry or linked FNRH pre-reservation selection", "Select room, dates, adult/child count", "Daily rate calculator with discount & custom fees", "Deposit/PIX status tracker"]
+    },
+    "ical_sync": {
+      "path": "src/components/admin/ICalSyncManager.js",
+      "features": ["Generate export iCal URL per room (Airbnb, Booking.com, TripLar)", "Import OTA feed links manually", "Direct upload of .ics calendar files", "Manual 'Sincronizar Agora' action & sync logs"]
+    },
+    "whatsapp_templates": {
+      "path": "src/components/admin/WhatsAppTemplates.js",
+      "features": ["Template presets: Boas-vindas, Confirmação com PIX, Lembrete de Check-in, Instruções de Lembrete", "Dynamic tag insertion ({nome}, {quarto}, {checkin}, {valor_pix}, {chave_pix})", "Visual preview with simulated WhatsApp bubble & instant copy/send button"]
+    },
+    "financial_ledger": {
+      "path": "src/components/admin/FinancialLedger.js",
+      "features": ["Revenue & Expense entries (Receitas / Despesas)", "Categories: Diárias, Consumo Bar/Restaurante, Manutenção, Limpeza, Comissões OTA, Salários, Utilidades", "Summary KPI metrics (Receita Total, Despesas, Lucro Líquido, Taxa de Ocupação)", "Monthly bar chart & filterable data table"]
+    },
+    "rooms_and_inventory": {
+      "path": "src/components/admin/RoomManagement.js",
+      "features": ["Room status CRUD (Nome, Categoria, Capacidade, Comodidades, Diária Base)", "Out-of-service/maintenance toggle"]
+    },
+    "pousada_settings_and_gallery": {
+      "path": "src/components/admin/PousadaSettings.js",
+      "features": ["Pousada profile edit (Nome, CNPJ, Razão Social, Horários Check-in/out, Chave PIX, Tipo de Chave)", "Gallery manager: Paste image URLs or Drag-and-drop direct file upload with thumbnail preview", "LGPD compliance & User RBAC management"]
+    }
+  },
+  "instructions_to_main_agent": [
+    "Use standard React .js files in src/ (do NOT use TypeScript syntax in .js files).",
+    "Include data-testid on all interactive buttons, inputs, links, tabs, and status badges (e.g. data-testid='reservation-status-badge', data-testid='btn-create-reservation').",
+    "Never use generic blue/purple SaaS templates. Follow the warm Terracotta (#C85A32) & Palm Green (#2D5A43) palette on Sand background (#FAF7F2).",
+    "Ensure dark mode support via Tailwind dark: classes with deep espresso slate background (#12100E).",
+    "Integrate Lucide React icons (@lucide-react or lucide-react) for clear UI indicators.",
+    "Use sonner for toast feedback (e.g. 'Chave PIX copiada!', 'Reserva salva com sucesso!', 'iCal sincronizado').",
+    "Provide clear PT-BR strings for all Brazilian hospitality terms (FNRH, Check-in, Check-out, Hóspede, Diária, PIX, iCal, Calção, Receita, Despesa)."
+  ]
+}

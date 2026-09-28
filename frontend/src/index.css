@@ -1,0 +1,90 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url("https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600;700&family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+
+:root {
+  --pousada-bg: #FAF7F2;
+  --pousada-surface: #FFFFFF;
+  --pousada-elev: #F4EFE6;
+  --pousada-text: #1C1917;
+  --pousada-text-2: #57534E;
+  --pousada-muted: #78716C;
+  --pousada-terracotta: #C85A32;
+  --pousada-terracotta-hover: #B04B26;
+  --pousada-palm: #2D5A43;
+  --pousada-amber: #D99B26;
+  --pousada-border: #E7E0D3;
+  --pousada-border-2: #D1C6B4;
+}
+
+@layer base {
+  :root {
+    --background: 42 34% 96%;
+    --foreground: 24 10% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 24 10% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 24 10% 10%;
+    --primary: 15 61% 49%;
+    --primary-foreground: 40 33% 97%;
+    --secondary: 40 20% 92%;
+    --secondary-foreground: 24 10% 10%;
+    --muted: 40 20% 92%;
+    --muted-foreground: 24 5% 45%;
+    --accent: 40 30% 90%;
+    --accent-foreground: 24 10% 10%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 36 30% 86%;
+    --input: 36 30% 86%;
+    --ring: 15 61% 49%;
+    --radius: 0.75rem;
+  }
+}
+
+* { border-color: hsl(var(--border)); }
+
+html, body, #root { min-height: 100%; }
+body {
+  margin: 0;
+  background: var(--pousada-bg);
+  color: var(--pousada-text);
+  font-family: "Outfit", "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+h1, h2, h3, .font-serif { font-family: "Playfair Display", serif; }
+.font-mono, .tabular { font-family: "JetBrains Mono", monospace; }
+
+.paper-grain {
+  background-image:
+    radial-gradient(rgba(180, 140, 90, 0.05) 1px, transparent 1px),
+    radial-gradient(rgba(200, 90, 50, 0.03) 1px, transparent 1px);
+  background-size: 24px 24px, 32px 32px;
+  background-position: 0 0, 12px 12px;
+}
+
+.shadow-warm { box-shadow: 0 8px 30px rgba(45, 30, 15, 0.08); }
+
+.btn-terra {
+  background: var(--pousada-terracotta);
+  color: white;
+  transition: background 200ms ease, transform 150ms ease;
+}
+.btn-terra:hover { background: var(--pousada-terracotta-hover); }
+.btn-terra:active { transform: translateY(1px); }
+
+.status-dot { width: 10px; height: 10px; border-radius: 999px; display: inline-block; }
+.status-confirmed { background: #2E7D32; }
+.status-pending { background: #ED6C02; }
+.status-cancelled { background: #D32F2F; }
+.status-blocked { background: #616161; }
+.status-maintenance { background: #8D6E63; }
+.status-checked_in { background: #0288D1; }
+.status-checked_out { background: #7B1FA2; }
+
+.gallery-fade { transition: opacity 300ms ease, transform 400ms ease; }

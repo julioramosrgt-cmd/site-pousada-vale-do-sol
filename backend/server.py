@@ -29,6 +29,7 @@ import qrcode
 import requests
 from icalendar import Calendar, Event
 from breeds import classify_breed, ALL_BREEDS
+from holidays import get_brazilian_holidays, is_brazilian_holiday
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, UploadFile, File, Query, Header, Response, status
 from fastapi.security import OAuth2PasswordBearer
 from starlette.middleware.cors import CORSMiddleware
@@ -864,7 +865,9 @@ def compute_pricing(room: dict, checkin: str, checkout: str, adults: int, childr
     for i in range(n):
         d = ci + timedelta(days=i)
         is_weekend = d.weekday() in (4, 5)  # Fri, Sat night
-        is_holiday = d.isoformat() in holidays
+        is_custom_holiday = d.isoformat() in holidays
+        is_nat_holiday, holiday_name = is_brazilian_holiday(d)
+        is_holiday = is_custom_holiday or is_nat_holiday
         surcharge = weekend_pct if (is_weekend or is_holiday) else 0.0
         nightly = base_rate * (1 + surcharge)
         # Adults
@@ -881,6 +884,8 @@ def compute_pricing(room: dict, checkin: str, checkout: str, adults: int, childr
             "surcharge": round(surcharge * 100, 2),
             "is_weekend": is_weekend,
             "is_holiday": is_holiday,
+            "is_national_holiday": is_nat_holiday,
+            "holiday_name": holiday_name,
             "nightly_rate": round(nightly, 2),
             "adults_value": round(adults_val, 2),
             "children_value": round(kids_val, 2),
@@ -915,6 +920,16 @@ async def pets_classify(breed: str, pet_type: str = ""):
 async def pets_breeds_list():
     """Autocomplete list of known breeds."""
     return {"breeds": sorted(ALL_BREEDS.keys())}
+
+
+@api.get("/public/holidays")
+async def public_holidays(year: int = Query(default=None)):
+    """Return Brazilian national holidays for the given year (defaults to current)."""
+    if year is None:
+        year = datetime.now(timezone.utc).year
+    y_now = get_brazilian_holidays(year)
+    y_next = get_brazilian_holidays(year + 1)
+    return {"year": year, "holidays": {**y_now, **y_next}}
 
 
 def _normalize_pets_input(pets: list, pets_small: int, pets_medium: int, pets_large: int):

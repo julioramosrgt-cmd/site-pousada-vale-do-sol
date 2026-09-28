@@ -30,8 +30,18 @@ const NumberField = ({ label, value, onChange, min = 0, testid }) => (
 
 const SIZE_LABEL = { small: "Pequeno porte (20,7%)", medium: "Médio porte (27,6%)", large: "Grande porte (34,5%)" };
 
-const PetRow = ({ pet, index, onChange, onRemove }) => {
+const normalize = (s) => (s || "")
+  .toString()
+  .toLowerCase()
+  .normalize("NFD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .trim();
+
+const PetRow = ({ pet, index, onChange, onRemove, allBreeds }) => {
   const [status, setStatus] = useState({ loading: false, matched: pet.matched, message: pet.message });
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [highlight, setHighlight] = useState(-1);
+  const wrapRef = useRef(null);
 
   useEffect(() => {
     const breed = (pet.breed || "").trim();
@@ -51,6 +61,33 @@ const PetRow = ({ pet, index, onChange, onRemove }) => {
     // eslint-disable-next-line
   }, [pet.breed, pet.type]);
 
+  // Close suggestions on outside click
+  useEffect(() => {
+    const h = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setShowSuggestions(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  const suggestions = useMemo(() => {
+    const q = normalize(pet.breed);
+    if (!q || !allBreeds?.length) return [];
+    return allBreeds.filter((b) => normalize(b).includes(q)).slice(0, 8);
+  }, [pet.breed, allBreeds]);
+
+  const pickSuggestion = (b) => {
+    onChange(index, { ...pet, breed: b, _manual: false });
+    setShowSuggestions(false);
+    setHighlight(-1);
+  };
+
+  const onKeyDown = (e) => {
+    if (!showSuggestions || suggestions.length === 0) return;
+    if (e.key === "ArrowDown") { e.preventDefault(); setHighlight((h) => Math.min(suggestions.length - 1, h + 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setHighlight((h) => Math.max(0, h - 1)); }
+    else if (e.key === "Enter" && highlight >= 0) { e.preventDefault(); pickSuggestion(suggestions[highlight]); }
+    else if (e.key === "Escape") { setShowSuggestions(false); }
+  };
+
   return (
     <div className="rounded-xl border border-stone-200 p-3" data-testid={`pet-row-${index}`}>
       <div className="grid sm:grid-cols-3 gap-2 mb-2">
@@ -65,15 +102,36 @@ const PetRow = ({ pet, index, onChange, onRemove }) => {
             </SelectContent>
           </Select>
         </div>
-        <div className="sm:col-span-2">
+        <div className="sm:col-span-2 relative" ref={wrapRef}>
           <Label className="text-xs">Raça *</Label>
           <Input
             value={pet.breed}
             required
-            onChange={(e) => onChange(index, { ...pet, breed: e.target.value, _manual: false })}
+            onChange={(e) => { onChange(index, { ...pet, breed: e.target.value, _manual: false }); setShowSuggestions(true); setHighlight(-1); }}
+            onFocus={() => setShowSuggestions(true)}
+            onKeyDown={onKeyDown}
+            autoComplete="off"
             placeholder="Ex.: Golden Retriever, Yorkshire, Siamês..."
             data-testid={`pet-breed-${index}`}
           />
+          {showSuggestions && suggestions.length > 0 && (
+            <ul
+              className="absolute z-20 left-0 right-0 mt-1 max-h-56 overflow-auto rounded-lg border border-stone-200 bg-white shadow-lg text-sm"
+              data-testid={`pet-breed-suggestions-${index}`}
+            >
+              {suggestions.map((b, i) => (
+                <li
+                  key={b}
+                  className={`px-3 py-1.5 cursor-pointer ${i === highlight ? "bg-amber-100" : "hover:bg-stone-50"}`}
+                  onMouseDown={(e) => { e.preventDefault(); pickSuggestion(b); }}
+                  onMouseEnter={() => setHighlight(i)}
+                  data-testid={`pet-breed-suggestion-${index}-${i}`}
+                >
+                  {b}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2 justify-between">
@@ -109,6 +167,7 @@ const PetRow = ({ pet, index, onChange, onRemove }) => {
 export default function PublicReservation() {
   const [rooms, setRooms] = useState([]);
   const [settings, setSettings] = useState({});
+  const [allBreeds, setAllBreeds] = useState([]);
   const [done, setDone] = useState(null);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -135,6 +194,7 @@ export default function PublicReservation() {
   useEffect(() => {
     api.get("/public/rooms").then((r) => setRooms(r.data)).catch(() => {});
     api.get("/public/settings").then((r) => setSettings(r.data)).catch(() => {});
+    api.get("/pets/breeds").then((r) => setAllBreeds(r.data?.breeds || [])).catch(() => {});
   }, []);
 
   const upd = (k, v) => setForm((f) => ({ ...f, [k]: v }));
@@ -309,7 +369,7 @@ export default function PublicReservation() {
               ) : (
                 <div className="space-y-2">
                   {form.pets.map((p, i) => (
-                    <PetRow key={i} pet={p} index={i} onChange={updPet} onRemove={removePet} />
+                    <PetRow key={i} pet={p} index={i} onChange={updPet} onRemove={removePet} allBreeds={allBreeds} />
                   ))}
                 </div>
               )}
@@ -335,8 +395,12 @@ export default function PublicReservation() {
                   <div className="pt-2 mt-2 border-t border-stone-300/70 max-h-40 overflow-y-auto">
                     <div className="text-xs uppercase tracking-widest text-stone-500 mb-1">Por noite</div>
                     {pricing.nights.map((n) => (
-                      <div key={n.date} className="flex justify-between text-xs font-mono">
-                        <span>{n.date} {n.surcharge > 0 && <span className="text-[color:var(--pousada-terracotta)]">+{n.surcharge}%</span>}</span>
+                      <div key={n.date} className="flex justify-between text-xs font-mono" data-testid={`night-row-${n.date}`}>
+                        <span className="truncate">
+                          {n.date}
+                          {n.surcharge > 0 && <span className="ml-1 text-[color:var(--pousada-terracotta)]">+{n.surcharge}%</span>}
+                          {n.is_national_holiday && <span className="ml-1 text-[color:var(--pousada-terracotta)]" title={n.holiday_name || "Feriado"}>🎉 {n.holiday_name || "Feriado"}</span>}
+                        </span>
                         <span>{brl(n.total)}</span>
                       </div>
                     ))}

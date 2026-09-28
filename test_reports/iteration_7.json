@@ -1,0 +1,28 @@
+{
+  "summary": "Iteration 7 — validated (a) automatic Brazilian national holidays applied in pricing engine and (b) pet-breed autocomplete on /reservar. Backend: 7/7 pytest passed. GET /api/public/holidays default returns >=2 years (Portuguese names); ?year=2025 contains Tiradentes 2025-04-21, Natal 2025-12-25, Consciência Negra 2025-11-20, Corpus Christi 2025-06-19, Carnaval Segunda 2025-03-03, Carnaval Terça 2025-03-04, Sexta-feira Santa 2025-04-18. POST /api/pricing/calc for 2025-04-20→2025-04-22 shows 1st night (Sun 04-20) surcharge=0/is_holiday=false and 2nd night (Tiradentes 04-21) surcharge=10.0/is_national_holiday=true/holiday_name='Tiradentes'/nightly_rate = base*1.10 (145→159.5). Corpus Christi 2025-06-19 also surcharged 10%. Regression Monday 2025-03-10 = 0 surcharge, is_holiday=false. Pet breeds regression: /api/pets/breeds=156 (>100); /api/pets/classify?breed=golden retriever → size=large, matched=true. Frontend /reservar: Adicionar pet works; typing 'gold' shows suggestion 'golden retriever' in [data-testid=pet-breed-suggestions-0]; click via mousedown fills the input and auto-classifies to size=large with '✓ classificado por raça' indicator. Typing 'sia' shows suggestions ['persian','rhodesian ridgeback','russian blue','siames','siamese','siamês']. Typing 'xxxxx' hides dropdown and shows [data-testid=pet-warning-0] 'Raça não reconhecida...'; manual size override to 'large' persists across debounce/re-render. Keyboard nav ArrowDown/ArrowUp/Enter selects suggestion; Escape closes it; outside click closes it. Selecting Suíte Família + 2025-04-20→2025-04-22 renders [data-testid=price-breakdown] with per-night row for 2025-04-21 displaying '+10% 🎉 Tiradentes' and Total R$ 409,55.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_holidays_and_pricing.py",
+    "/app/test_reports/pytest/iter7.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "holidays.py: get_brazilian_holidays uses @lru_cache(maxsize=32) which is fine but returns a mutable dict — a caller mutating it would poison the cache. Consider returning types.MappingProxyType or a frozenset for callers.",
+    "server.py compute_pricing: holiday_name is set only from is_brazilian_holiday; if a night is marked holiday only via custom `settings.holidays` list, holiday_name is None even though is_holiday=true. Consider labeling custom holidays with a generic name or exposing them in the UI.",
+    "server.py: /api/public/holidays fetches current+next year only; consider accepting a range or documenting behavior. It also mutates via dict spread which is fine.",
+    "PublicReservation.js still >450 lines with PetRow inline — consider extracting to its own file for maintainability.",
+    "PetRow: input onChange resets `_manual: false` on every keystroke, meaning if a user first sets manual size and then edits the breed, the manual flag is lost (already flagged in iteration 6)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_holidays_and_pricing.py",
+    "/app/test_reports/iteration_7.json"
+  ],
+  "success_rate": {"backend": "100% (7/7)", "frontend": "100% (all 10 assertions from spec verified)"},
+  "test_credentials": "admin@pousada.com / pousada2024 (not exercised this iteration — public endpoints only)",
+  "seed_data_creation": "None — used existing seeded rooms (public/rooms).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "New backend module /app/backend/holidays.py provides get_brazilian_holidays(year) and is_brazilian_holiday(date). compute_pricing (server.py ~855) merges is_brazilian_holiday with settings.holidays; a night is_holiday if either. Frontend /reservar uses allBreeds fetched from /api/pets/breeds and PetRow renders <ul data-testid='pet-breed-suggestions-{i}'>. Pricing breakdown card [data-testid=price-breakdown] renders per-night rows with '+{surcharge}%' and 🎉 holiday_name when is_national_holiday. Reservation form field IDs on /reservar: check-in/check-out are the 2nd/3rd date inputs (Data de nascimento is the 1st). For future tests, use POST /api/pricing/calc with fields checkin_date/checkout_date (not 'checkin'/'checkout' — this tripped up iteration 7 at first).",
+  "rca of the issue": "No issues found this iteration."
+}

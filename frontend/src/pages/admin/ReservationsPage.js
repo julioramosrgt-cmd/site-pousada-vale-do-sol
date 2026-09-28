@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Trash2, MessageSquare } from "lucide-react";
+import { Plus, Trash2, MessageSquare, Paperclip } from "lucide-react";
 
 const STATUS_LABEL = { pending: "Pendente", confirmed: "Confirmada", cancelled: "Cancelada", blocked: "Bloqueado", maintenance: "Manutenção", checked_in: "Check-in", checked_out: "Check-out" };
 
@@ -174,6 +174,11 @@ export default function ReservationsPage() {
                   </td>
                   <td className="p-3 text-right">
                     <div className="inline-flex gap-1">
+                      {r.payment_receipt_url && (
+                        <a href={r.payment_receipt_url} target="_blank" rel="noreferrer" title="Ver comprovante PIX" data-testid={`receipt-${r.id}`}>
+                          <Button size="icon" variant="ghost"><Paperclip className="w-4 h-4 text-[color:var(--pousada-palm)]" /></Button>
+                        </a>
+                      )}
                       <Button size="icon" variant="ghost" title="Enviar PIX no WhatsApp" onClick={() => sendPix(r)} data-testid={`send-pix-${r.id}`}><MessageSquare className="w-4 h-4" /></Button>
                       <Button size="icon" variant="ghost" onClick={() => remove(r)} data-testid={`del-${r.id}`}><Trash2 className="w-4 h-4 text-red-600" /></Button>
                     </div>

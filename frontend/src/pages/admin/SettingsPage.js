@@ -6,12 +6,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Save, Trash2, Upload, ImagePlus, X } from "lucide-react";
+import { Save, Trash2, Upload, ImagePlus, X, QrCode, Copy, Download } from "lucide-react";
 
 export default function SettingsPage() {
   const [s, setS] = useState(null);
   const [gallery, setGallery] = useState([]);
   const [newUrl, setNewUrl] = useState("");
+  const [qr, setQr] = useState(null);
   const fileRef = useRef(null);
   const coverRef = useRef(null);
   const logoRef = useRef(null);
@@ -60,6 +61,22 @@ export default function SettingsPage() {
   const removeItem = async (id) => {
     await api.delete(`/gallery/${id}`);
     toast.success("Removida"); load();
+  };
+
+  const publicReserveUrl = `${window.location.origin}/reservar`;
+  const genQR = async () => {
+    try {
+      const r = await api.post("/qr/link", { url: publicReserveUrl });
+      setQr(r.data);
+      toast.success("QR gerado");
+    } catch { toast.error("Falha ao gerar QR"); }
+  };
+  const downloadQR = () => {
+    if (!qr) return;
+    const a = document.createElement("a");
+    a.href = qr.qr_png_base64;
+    a.download = `qr-reservar-${(s?.name || "pousada").toLowerCase().replace(/\s+/g, "-")}.png`;
+    a.click();
   };
 
   if (!s) return <p>Carregando...</p>;
@@ -157,6 +174,25 @@ export default function SettingsPage() {
         <div className="sm:col-span-2"><Label>Políticas / regras</Label><Textarea rows={3} value={s.policies} onChange={(e) => upd("policies", e.target.value)} /></div>
         <div className="sm:col-span-2"><Button type="submit" className="btn-terra rounded-xl" data-testid="btn-save-settings"><Save className="w-4 h-4 mr-1" />Salvar alterações</Button></div>
       </form>
+
+      <div className="rounded-2xl bg-white border border-stone-200/70 shadow-warm p-6">
+        <h3 className="font-serif text-xl mb-1">QR Code para reservas</h3>
+        <p className="text-sm text-stone-500 mb-4">Cole na porta da recepção, folder ou balcão. Ao escanear, o hóspede abre o formulário público no celular.</p>
+        <div className="flex flex-col sm:flex-row gap-4 items-start">
+          <div className="flex-1 min-w-0">
+            <Label>URL do formulário</Label>
+            <div className="flex gap-2 mt-1">
+              <Input readOnly value={publicReserveUrl} className="font-mono text-xs" data-testid="qr-url" />
+              <Button type="button" variant="outline" onClick={() => { navigator.clipboard.writeText(publicReserveUrl); toast.success("Link copiado"); }}><Copy className="w-4 h-4" /></Button>
+            </div>
+            <div className="mt-3 flex gap-2">
+              <Button type="button" onClick={genQR} className="btn-terra rounded-xl" data-testid="btn-gen-qr"><QrCode className="w-4 h-4 mr-1" />Gerar QR</Button>
+              {qr && <Button type="button" variant="outline" onClick={downloadQR} data-testid="btn-download-qr"><Download className="w-4 h-4 mr-1" />Baixar PNG</Button>}
+            </div>
+          </div>
+          {qr && <img src={qr.qr_png_base64} alt="QR" className="w-40 h-40 rounded-xl border border-stone-200 bg-white p-2" data-testid="qr-img" />}
+        </div>
+      </div>
 
       <div className="rounded-2xl bg-white border border-stone-200/70 shadow-warm p-6">
         <h3 className="font-serif text-xl mb-1">Galeria (carrossel do site)</h3>

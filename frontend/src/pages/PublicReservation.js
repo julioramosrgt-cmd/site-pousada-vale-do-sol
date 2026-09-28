@@ -1,14 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
-import { api } from "@/lib/apiClient";
+import { api, API } from "@/lib/apiClient";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowLeft, CheckCircle2, Calculator } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Calculator, Upload, FileCheck2, X } from "lucide-react";
 
 function money(v) { return `R$ ${Number(v || 0).toFixed(2).replace(".", ",")}`; }
 function nightsBetween(a, b) {
@@ -22,12 +22,15 @@ export default function PublicReservation() {
   const [settings, setSettings] = useState({});
   const [done, setDone] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const receiptRef = useRef(null);
   const [form, setForm] = useState({
     room_id: "",
     guest_name: "", guest_document: "", guest_email: "", guest_phone: "",
     guest_birthdate: "", guest_address: "", travel_reason: "", transport: "",
     checkin_date: "", checkout_date: "", adults: 1, children: 0,
     estimated_arrival: "", notes: "", accepted_terms: false,
+    payment_receipt_url: "",
   });
 
   useEffect(() => {
@@ -36,6 +39,21 @@ export default function PublicReservation() {
   }, []);
 
   const upd = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  const uploadReceipt = async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    if (f.size > 8 * 1024 * 1024) return toast.error("Arquivo maior que 8MB");
+    setUploading(true);
+    try {
+      const fd = new FormData(); fd.append("file", f);
+      const r = await api.post("/public/uploads/receipt", fd, { headers: { "Content-Type": "multipart/form-data" } });
+      upd("payment_receipt_url", `${API}/files/${r.data.path}`);
+      toast.success("Comprovante anexado");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Falha no envio");
+    } finally { setUploading(false); e.target.value = ""; }
+  };
 
   const selectedRoom = useMemo(() => rooms.find((r) => r.id === form.room_id), [rooms, form.room_id]);
   const nights = nightsBetween(form.checkin_date, form.checkout_date);
@@ -186,6 +204,25 @@ export default function PublicReservation() {
             <div>
               <Label>Observações</Label>
               <Textarea rows={3} value={form.notes} onChange={(e) => upd("notes", e.target.value)} placeholder="Restrições alimentares, pedidos especiais..." />
+            </div>
+
+            {/* Receipt upload */}
+            <div className="rounded-2xl border border-stone-200 p-4">
+              <Label className="text-sm">Comprovante de pagamento PIX (opcional agora, pode enviar depois)</Label>
+              <input ref={receiptRef} type="file" accept="image/*,application/pdf" hidden onChange={uploadReceipt} />
+              <div className="mt-2 flex flex-wrap items-center gap-3">
+                <Button type="button" variant="outline" className="rounded-xl" onClick={() => receiptRef.current?.click()} disabled={uploading} data-testid="btn-upload-receipt">
+                  <Upload className="w-4 h-4 mr-1" />{uploading ? "Enviando..." : "Anexar comprovante"}
+                </Button>
+                {form.payment_receipt_url && (
+                  <div className="flex items-center gap-2 text-sm text-[color:var(--pousada-palm)]" data-testid="receipt-attached">
+                    <FileCheck2 className="w-4 h-4" />
+                    <a href={form.payment_receipt_url} target="_blank" rel="noreferrer" className="underline">Comprovante anexado</a>
+                    <button type="button" onClick={() => upd("payment_receipt_url", "")} className="text-stone-400 hover:text-stone-700"><X className="w-3.5 h-3.5" /></button>
+                  </div>
+                )}
+              </div>
+              <p className="text-xs text-stone-500 mt-2">Imagem ou PDF, máx 8MB. Anexar agiliza a confirmação da reserva.</p>
             </div>
 
             <label className="flex items-start gap-3 text-sm text-stone-700">

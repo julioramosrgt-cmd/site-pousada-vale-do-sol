@@ -270,6 +270,7 @@ class Reservation(BaseModel):
     deposit_amount: float = 0.0
     accepted_terms: bool = False
     ota_uid: Optional[str] = None  # for imported events
+    payment_receipt_url: Optional[str] = ""
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -312,6 +313,7 @@ class PublicReservationIn(BaseModel):
     estimated_arrival: Optional[str] = ""
     notes: Optional[str] = ""
     accepted_terms: bool
+    payment_receipt_url: Optional[str] = ""
 
 
 class ReservationStatusIn(BaseModel):
@@ -776,6 +778,31 @@ def _owner_email_html(settings: dict, r: dict, room_name: str) -> str:
     )
 
 
+# ----- Public receipt upload (no auth, rate-limited by content-type + size) -----
+@api.post("/public/uploads/receipt")
+async def public_upload_receipt(file: UploadFile = File(...)):
+    ctype = (file.content_type or "").lower()
+    if not (ctype.startswith("image/") or ctype == "application/pdf"):
+        raise HTTPException(400, "Envie uma imagem ou PDF")
+    data = await file.read()
+    if len(data) > 8 * 1024 * 1024:
+        raise HTTPException(413, "Arquivo muito grande (máx 8MB)")
+    ext = (file.filename or "bin").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else "bin"
+    path = f"{APP_NAME}/receipts/{new_id()}.{ext}"
+    result = put_object(path, data, ctype)
+    file_doc = {
+        "id": new_id(),
+        "storage_path": result["path"],
+        "original_filename": file.filename,
+        "content_type": ctype,
+        "size": result.get("size", len(data)),
+        "is_deleted": False,
+        "created_at": now_iso(),
+    }
+    await db.files.insert_one(file_doc)
+    return {"path": result["path"], "url": f"/api/files/{result['path']}", "size": file_doc["size"]}
+
+
 # ----- PUBLIC pre-reservation (write-only) -----
 @api.post("/public/pre-reservation")
 async def public_pre_reservation(data: PublicReservationIn):
@@ -969,6 +996,23 @@ def _crc16_ccitt(data: str) -> str:
             crc = ((crc << 1) ^ 0x1021) if (crc & 0x8000) else (crc << 1)
             crc &= 0xFFFF
     return f"{crc:04X}"
+
+
+# ----- Public QR (link to /reservar) -----
+class PublicQRIn(BaseModel):
+    url: str
+    caption: Optional[str] = ""
+
+
+@api.post("/qr/link")
+async def qr_link(data: PublicQRIn, user=Depends(require_admin)):
+    if not data.url:
+        raise HTTPException(400, "URL obrigatória")
+    img = qrcode.make(data.url)
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    return {"url": data.url, "qr_png_base64": f"data:image/png;base64,{b64}"}
 
 
 def _strip_accents(s: str) -> str:

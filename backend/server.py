@@ -3,10 +3,13 @@ Modules: Auth, Settings/Gallery, Rooms, Reservations (FNRH public + internal),
 Financial ledger, iCal export/import, WhatsApp templates, file uploads.
 """
 import os
+import asyncio
 import uuid
 import logging
 import hashlib
 import hmac
+import csv
+import io
 from pathlib import Path
 from datetime import datetime, timezone, timedelta, date
 from typing import List, Optional, Annotated
@@ -368,6 +371,27 @@ async def startup():
     except Exception:
         pass
 
+    # Auto-sync iCal every 15 min (background task)
+    asyncio.create_task(_ical_auto_sync_loop())
+
+
+async def _ical_auto_sync_loop():
+    """Every 15 minutes, sync all iCal sources so Airbnb/Booking/TripLar blocks import automatically."""
+    await asyncio.sleep(30)  # small delay after startup
+    while True:
+        try:
+            sources = await db.ical_sources.find({"is_deleted": {"$ne": True}}, {"_id": 0}).to_list(500)
+            for s in sources:
+                try:
+                    await _sync_source(s)
+                except Exception as e:
+                    logger.warning(f"auto-sync source failed: {e}")
+            if sources:
+                logger.info(f"iCal auto-sync completed: {len(sources)} source(s)")
+        except Exception as e:
+            logger.error(f"iCal auto-sync loop error: {e}")
+        await asyncio.sleep(15 * 60)
+
 
 # ----- Auth -----
 @api.post("/auth/login")
@@ -625,6 +649,64 @@ async def finance_create(data: FinanceIn, user=Depends(require_admin)):
 async def finance_delete(entry_id: str, user=Depends(require_admin)):
     await db.finance.update_one({"id": entry_id}, {"$set": {"is_deleted": True}})
     return {"ok": True}
+
+
+@api.get("/finance/export.csv")
+async def finance_export_csv(user=Depends(require_admin), from_date: Optional[str] = None, to_date: Optional[str] = None):
+    q: dict = {"is_deleted": {"$ne": True}}
+    if from_date or to_date:
+        q["entry_date"] = {}
+        if from_date:
+            q["entry_date"]["$gte"] = from_date
+        if to_date:
+            q["entry_date"]["$lte"] = to_date
+    rows = await db.finance.find(q, {"_id": 0}).sort("entry_date", 1).to_list(5000)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["Data", "Tipo", "Categoria", "Valor", "Descricao"])
+    for r in rows:
+        w.writerow([
+            r.get("entry_date", ""),
+            "Receita" if r.get("kind") == "income" else "Despesa",
+            r.get("category", ""),
+            f"{float(r.get('amount', 0)):.2f}",
+            (r.get("description") or "").replace("\n", " "),
+        ])
+    return Response(
+        content=buf.getvalue().encode("utf-8-sig"),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="financeiro_{from_date or "inicio"}_{to_date or "hoje"}.csv"'},
+    )
+
+
+@api.get("/finance/monthly")
+async def finance_monthly(user=Depends(require_admin), months: int = 6):
+    """Aggregate income/expense per month for the last N months."""
+    today = date.today()
+    year, month = today.year, today.month
+    result: list = []
+    for i in range(months - 1, -1, -1):
+        m = month - i
+        y = year
+        while m <= 0:
+            m += 12
+            y -= 1
+        start = date(y, m, 1)
+        end = date(y + (1 if m == 12 else 0), 1 if m == 12 else m + 1, 1)
+        rows = await db.finance.find(
+            {"is_deleted": {"$ne": True}, "entry_date": {"$gte": start.isoformat(), "$lt": end.isoformat()}},
+            {"_id": 0},
+        ).to_list(2000)
+        inc = sum(r["amount"] for r in rows if r["kind"] == "income")
+        exp = sum(r["amount"] for r in rows if r["kind"] == "expense")
+        result.append({
+            "label": f"{start.strftime('%b')}/{str(y)[2:]}",
+            "month": start.isoformat(),
+            "income": round(inc, 2),
+            "expense": round(exp, 2),
+            "profit": round(inc - exp, 2),
+        })
+    return result
 
 
 @api.get("/finance/summary")

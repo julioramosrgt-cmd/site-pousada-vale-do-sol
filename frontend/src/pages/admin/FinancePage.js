@@ -1,17 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
-import { api } from "@/lib/apiClient";
+import { api, API } from "@/lib/apiClient";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Trash2, TrendingUp, TrendingDown } from "lucide-react";
+import { Plus, Trash2, TrendingUp, TrendingDown, Download } from "lucide-react";
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from "recharts";
 
 const CATEGORIES = ["Diárias", "Consumo Bar/Restaurante", "Manutenção", "Limpeza", "Comissões OTA", "Salários", "Utilidades", "Outros"];
 
 export default function FinancePage() {
   const [rows, setRows] = useState([]);
   const [summary, setSummary] = useState(null);
+  const [monthly, setMonthly] = useState([]);
   const [range, setRange] = useState(() => {
     const t = new Date();
     return {
@@ -25,8 +27,26 @@ export default function FinancePage() {
     const q = `?from_date=${range.from}&to_date=${range.to}`;
     api.get(`/finance${q}`).then((r) => setRows(r.data));
     api.get(`/finance/summary${q}`).then((r) => setSummary(r.data));
+    api.get(`/finance/monthly?months=6`).then((r) => setMonthly(r.data));
   };
   useEffect(load, [range]);
+
+  const exportCSV = async () => {
+    try {
+      const token = localStorage.getItem("pousada_token");
+      const r = await fetch(`${API}/finance/export.csv?from_date=${range.from}&to_date=${range.to}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!r.ok) throw new Error("Erro no export");
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `financeiro_${range.from}_${range.to}.csv`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      toast.success("CSV exportado");
+    } catch { toast.error("Falha ao exportar"); }
+  };
 
   const save = async (e) => {
     e.preventDefault();
@@ -43,9 +63,14 @@ export default function FinancePage() {
 
   return (
     <div>
-      <div className="mb-6">
-        <span className="text-xs uppercase tracking-widest text-amber-800/70">Financeiro</span>
-        <h1 className="font-serif text-3xl sm:text-4xl">Receitas & Despesas</h1>
+      <div className="mb-6 flex items-end justify-between gap-4">
+        <div>
+          <span className="text-xs uppercase tracking-widest text-amber-800/70">Financeiro</span>
+          <h1 className="font-serif text-3xl sm:text-4xl">Receitas & Despesas</h1>
+        </div>
+        <Button variant="outline" onClick={exportCSV} className="rounded-xl" data-testid="btn-export-csv">
+          <Download className="w-4 h-4 mr-1" />Exportar CSV
+        </Button>
       </div>
 
       <div className="grid sm:grid-cols-3 gap-4 mb-6">
@@ -60,6 +85,26 @@ export default function FinancePage() {
         <div className="rounded-2xl bg-[color:var(--pousada-terracotta)] text-white p-5">
           <div className="flex justify-between text-xs uppercase tracking-widest text-white/80"><span>Lucro</span><span>{summary?.occupancy ?? 0}% ocup.</span></div>
           <div className="mt-2 font-serif text-3xl">R$ {summary?.profit?.toFixed(2) ?? "0.00"}</div>
+        </div>
+      </div>
+
+      <div className="rounded-2xl bg-white border border-stone-200/70 shadow-warm p-6 mb-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-serif text-xl">Evolução mensal</h3>
+          <span className="text-xs text-stone-500">Últimos 6 meses</span>
+        </div>
+        <div style={{ width: "100%", height: 240 }} data-testid="finance-chart">
+          <ResponsiveContainer>
+            <BarChart data={monthly} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#E7E0D3" />
+              <XAxis dataKey="label" stroke="#78716C" fontSize={12} />
+              <YAxis stroke="#78716C" fontSize={12} tickFormatter={(v) => `R$${v}`} />
+              <Tooltip formatter={(v) => `R$ ${Number(v).toFixed(2)}`} />
+              <Legend />
+              <Bar dataKey="income" name="Receitas" fill="#2D5A43" radius={[6, 6, 0, 0]} />
+              <Bar dataKey="expense" name="Despesas" fill="#C85A32" radius={[6, 6, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
         </div>
       </div>
 

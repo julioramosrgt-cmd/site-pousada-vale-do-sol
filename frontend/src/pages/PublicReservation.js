@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowLeft, CheckCircle2, Calculator, Upload, FileCheck2, X, AlertTriangle, PawPrint, CigaretteOff } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Calculator, Upload, FileCheck2, X, AlertTriangle, PawPrint, CigaretteOff, Plus } from "lucide-react";
 
 function brl(v) { return `R$ ${Number(v || 0).toFixed(2).replace(".", ",")}`; }
 function nightsBetween(a, b) {
@@ -28,6 +28,84 @@ const NumberField = ({ label, value, onChange, min = 0, testid }) => (
   </div>
 );
 
+const SIZE_LABEL = { small: "Pequeno porte (20,7%)", medium: "Médio porte (27,6%)", large: "Grande porte (34,5%)" };
+
+const PetRow = ({ pet, index, onChange, onRemove }) => {
+  const [status, setStatus] = useState({ loading: false, matched: pet.matched, message: pet.message });
+
+  useEffect(() => {
+    const breed = (pet.breed || "").trim();
+    if (!breed) { setStatus({ loading: false, matched: null, message: null }); return; }
+    setStatus((s) => ({ ...s, loading: true }));
+    const t = setTimeout(() => {
+      api.get(`/pets/classify?breed=${encodeURIComponent(breed)}&pet_type=${encodeURIComponent(pet.type || "")}`)
+        .then((r) => {
+          const auto = r.data;
+          setStatus({ loading: false, matched: auto.matched, message: auto.message });
+          // Only auto-apply size if user hasn't manually overridden
+          if (!pet._manual) onChange(index, { ...pet, size: auto.size, matched: auto.matched, message: auto.message });
+        })
+        .catch(() => setStatus({ loading: false, matched: false, message: "Não foi possível classificar. Selecione o porte manualmente." }));
+    }, 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line
+  }, [pet.breed, pet.type]);
+
+  return (
+    <div className="rounded-xl border border-stone-200 p-3" data-testid={`pet-row-${index}`}>
+      <div className="grid sm:grid-cols-3 gap-2 mb-2">
+        <div>
+          <Label className="text-xs">Tipo *</Label>
+          <Select value={pet.type} onValueChange={(v) => onChange(index, { ...pet, type: v })}>
+            <SelectTrigger data-testid={`pet-type-${index}`}><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="cão">Cão</SelectItem>
+              <SelectItem value="gato">Gato</SelectItem>
+              <SelectItem value="outro">Outro</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="sm:col-span-2">
+          <Label className="text-xs">Raça *</Label>
+          <Input
+            value={pet.breed}
+            required
+            onChange={(e) => onChange(index, { ...pet, breed: e.target.value, _manual: false })}
+            placeholder="Ex.: Golden Retriever, Yorkshire, Siamês..."
+            data-testid={`pet-breed-${index}`}
+          />
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 justify-between">
+        <div className="text-sm">
+          <span className="text-stone-500 mr-2">Porte:</span>
+          <select
+            value={pet.size || "medium"}
+            onChange={(e) => onChange(index, { ...pet, size: e.target.value, _manual: true })}
+            className="rounded-lg border border-stone-300 px-2 py-1 text-sm"
+            data-testid={`pet-size-${index}`}
+          >
+            <option value="small">Pequeno</option>
+            <option value="medium">Médio</option>
+            <option value="large">Grande</option>
+          </select>
+          {status.loading ? <span className="ml-2 text-xs text-stone-400">classificando...</span> :
+            (pet.breed && status.matched === true) ? <span className="ml-2 text-xs text-emerald-700">✓ classificado por raça</span> :
+            (pet.breed && status.matched === false) ? <span className="ml-2 text-xs text-amber-700">⚠ raça não reconhecida</span> : null}
+        </div>
+        <button type="button" onClick={() => onRemove(index)} className="text-stone-400 hover:text-red-600 text-xs inline-flex items-center gap-1" data-testid={`pet-remove-${index}`}>
+          <X className="w-3.5 h-3.5" /> remover
+        </button>
+      </div>
+      {pet.breed && status.matched === false && (
+        <div className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2" data-testid={`pet-warning-${index}`}>
+          Raça não reconhecida na nossa base — definimos <strong>{SIZE_LABEL[pet.size] || SIZE_LABEL.medium}</strong> por padrão. Se sabe o porte correto, ajuste no seletor acima.
+        </div>
+      )}
+    </div>
+  );
+};
+
 export default function PublicReservation() {
   const [rooms, setRooms] = useState([]);
   const [settings, setSettings] = useState({});
@@ -42,10 +120,17 @@ export default function PublicReservation() {
     guest_birthdate: "", guest_address: "", travel_reason: "", transport: "",
     checkin_date: "", checkout_date: "",
     adults: 1, children_0_3: 0, children_4_10: 0,
-    pets_small: 0, pets_medium: 0, pets_large: 0,
+    pets: [],
     estimated_arrival: "", notes: "", accepted_terms: false,
     payment_receipt_url: "",
   });
+
+  const petCounts = useMemo(() => {
+    const c = { small: 0, medium: 0, large: 0 };
+    (form.pets || []).forEach((p) => { const s = p.size || "medium"; if (c[s] !== undefined) c[s] += 1; });
+    return c;
+  }, [form.pets]);
+  const totalPets = petCounts.small + petCounts.medium + petCounts.large;
 
   useEffect(() => {
     api.get("/public/rooms").then((r) => setRooms(r.data)).catch(() => {});
@@ -53,9 +138,12 @@ export default function PublicReservation() {
   }, []);
 
   const upd = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const updPet = (i, next) => setForm((f) => { const arr = [...(f.pets || [])]; arr[i] = next; return { ...f, pets: arr }; });
+  const addPet = () => setForm((f) => ({ ...f, pets: [...(f.pets || []), { type: "cão", breed: "", size: "medium" }] }));
+  const removePet = (i) => setForm((f) => { const arr = [...(f.pets || [])]; arr.splice(i, 1); return { ...f, pets: arr }; });
+
   const selectedRoom = useMemo(() => rooms.find((r) => r.id === form.room_id), [rooms, form.room_id]);
   const nights = nightsBetween(form.checkin_date, form.checkout_date);
-  const totalPets = (Number(form.pets_small) || 0) + (Number(form.pets_medium) || 0) + (Number(form.pets_large) || 0);
 
   // Fetch live pricing from backend whenever inputs change
   useEffect(() => {
@@ -69,13 +157,13 @@ export default function PublicReservation() {
         adults: Math.max(1, parseInt(form.adults || "1", 10)),
         children_0_3: Math.max(0, parseInt(form.children_0_3 || "0", 10)),
         children_4_10: Math.max(0, parseInt(form.children_4_10 || "0", 10)),
-        pets_small: Math.max(0, parseInt(form.pets_small || "0", 10)),
-        pets_medium: Math.max(0, parseInt(form.pets_medium || "0", 10)),
-        pets_large: Math.max(0, parseInt(form.pets_large || "0", 10)),
+        pets_small: petCounts.small,
+        pets_medium: petCounts.medium,
+        pets_large: petCounts.large,
       }, { signal: controller.signal }).then((r) => setPricing(r.data)).catch(() => {});
     }, 200);
     return () => { clearTimeout(t); controller.abort(); };
-  }, [form.room_id, form.checkin_date, form.checkout_date, form.adults, form.children_0_3, form.children_4_10, form.pets_small, form.pets_medium, form.pets_large, nights]);
+  }, [form.room_id, form.checkin_date, form.checkout_date, form.adults, form.children_0_3, form.children_4_10, petCounts.small, petCounts.medium, petCounts.large, nights]);
 
   const uploadReceipt = async (e) => {
     const f = e.target.files?.[0];
@@ -96,6 +184,12 @@ export default function PublicReservation() {
     e.preventDefault();
     if (!form.accepted_terms) return toast.error("Aceite os termos para continuar");
     if (nights <= 0) return toast.error("Data de saída deve ser após a chegada");
+    // Validate pets
+    for (let i = 0; i < (form.pets || []).length; i++) {
+      const p = form.pets[i];
+      if (!p.breed || !p.breed.trim()) return toast.error(`Preencha a raça do pet #${i + 1}`);
+      if (!p.type) return toast.error(`Selecione o tipo do pet #${i + 1}`);
+    }
     const adultsNum = Math.max(1, parseInt(form.adults || "1", 10));
     const k03 = Math.max(0, parseInt(form.children_0_3 || "0", 10));
     const k410 = Math.max(0, parseInt(form.children_4_10 || "0", 10));
@@ -110,9 +204,10 @@ export default function PublicReservation() {
         children_0_3: k03,
         children_4_10: k410,
         children: k03 + k410,
-        pets_small: Math.max(0, parseInt(form.pets_small || "0", 10)),
-        pets_medium: Math.max(0, parseInt(form.pets_medium || "0", 10)),
-        pets_large: Math.max(0, parseInt(form.pets_large || "0", 10)),
+        pets: (form.pets || []).map((p) => ({ type: p.type || "cão", breed: (p.breed || "").trim(), size: p.size || "medium" })),
+        pets_small: petCounts.small,
+        pets_medium: petCounts.medium,
+        pets_large: petCounts.large,
         room_id: form.room_id || null,
       };
       const r = await api.post("/public/pre-reservation", payload);
@@ -206,14 +301,18 @@ export default function PublicReservation() {
             <div className="rounded-2xl border border-stone-200 p-4">
               <div className="flex items-center justify-between mb-1">
                 <h4 className="font-serif text-lg flex items-center gap-2"><PawPrint className="w-4 h-4 text-[color:var(--pousada-terracotta)]" /> Pets</h4>
-                <span className="text-xs text-stone-500">Taxa por diária</span>
+                <Button type="button" size="sm" variant="outline" onClick={addPet} className="rounded-xl" data-testid="btn-add-pet"><Plus className="w-3.5 h-3.5 mr-1" />Adicionar pet</Button>
               </div>
-              <p className="text-xs text-stone-500 mb-2">Pequeno {settings.pet_small_pct || 20.7}% · Médio {settings.pet_medium_pct || 27.6}% · Grande {settings.pet_large_pct || 34.5}% da diária de 1 hóspede.</p>
-              <div className="divide-y divide-stone-100">
-                <NumberField label="Pequeno porte" value={form.pets_small} onChange={(v) => upd("pets_small", v)} testid="fnrh-pet-s" />
-                <NumberField label="Médio porte" value={form.pets_medium} onChange={(v) => upd("pets_medium", v)} testid="fnrh-pet-m" />
-                <NumberField label="Grande porte" value={form.pets_large} onChange={(v) => upd("pets_large", v)} testid="fnrh-pet-l" />
-              </div>
+              <p className="text-xs text-stone-500 mb-3">Informe o <strong>tipo</strong> e a <strong>raça</strong>; classificamos o porte automaticamente. Pequeno {settings.pet_small_pct || 20.7}% · Médio {settings.pet_medium_pct || 27.6}% · Grande {settings.pet_large_pct || 34.5}% da diária de 1 hóspede.</p>
+              {(form.pets || []).length === 0 ? (
+                <p className="text-sm text-stone-500">Nenhum pet adicionado.</p>
+              ) : (
+                <div className="space-y-2">
+                  {form.pets.map((p, i) => (
+                    <PetRow key={i} pet={p} index={i} onChange={updPet} onRemove={removePet} />
+                  ))}
+                </div>
+              )}
               {totalPets > 0 && (
                 <div className="mt-3 rounded-xl bg-orange-50 border border-orange-200 p-3 text-sm text-orange-900 flex items-start gap-2" data-testid="notice-pet">
                   <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />

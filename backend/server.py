@@ -28,6 +28,7 @@ import jwt
 import qrcode
 import requests
 from icalendar import Calendar, Event
+from breeds import classify_breed, ALL_BREEDS
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, UploadFile, File, Query, Header, Response, status
 from fastapi.security import OAuth2PasswordBearer
 from starlette.middleware.cors import CORSMiddleware
@@ -284,6 +285,7 @@ class Reservation(BaseModel):
     pets_small: int = 0
     pets_medium: int = 0
     pets_large: int = 0
+    pets: List[dict] = []
     pricing_breakdown: Optional[dict] = None
     created_at: str = Field(default_factory=now_iso)
 
@@ -315,6 +317,12 @@ class ReservationIn(BaseModel):
     source: Optional[str] = "direct"
 
 
+class PetItem(BaseModel):
+    type: str = "cão"
+    breed: str = ""
+    size: Optional[str] = None  # small | medium | large (auto-classified if missing)
+
+
 class PublicReservationIn(BaseModel):
     room_id: Optional[str] = None
     guest_name: str = Field(min_length=2)
@@ -334,6 +342,7 @@ class PublicReservationIn(BaseModel):
     pets_small: int = 0
     pets_medium: int = 0
     pets_large: int = 0
+    pets: List[PetItem] = []
     estimated_arrival: Optional[str] = ""
     notes: Optional[str] = ""
     accepted_terms: bool
@@ -894,6 +903,47 @@ def compute_pricing(room: dict, checkin: str, checkout: str, adults: int, childr
     }
 
 
+# ----- Pets breed classification -----
+@api.get("/pets/classify")
+async def pets_classify(breed: str, pet_type: str = ""):
+    size, matched = classify_breed(breed, pet_type)
+    return {"breed": breed, "type": pet_type, "size": size, "matched": matched,
+            "message": None if matched else "Raça não reconhecida — usando porte médio como padrão. Ajuste manualmente se necessário."}
+
+
+@api.get("/pets/breeds")
+async def pets_breeds_list():
+    """Autocomplete list of known breeds."""
+    return {"breeds": sorted(ALL_BREEDS.keys())}
+
+
+def _normalize_pets_input(pets: list, pets_small: int, pets_medium: int, pets_large: int):
+    """Given an array of pets (with breed) or legacy count fields, return (list_with_size, small_ct, med_ct, large_ct)."""
+    out = []
+    s = m = l = 0
+    if pets:
+        for p in pets:
+            if not isinstance(p, dict):
+                p = p.model_dump() if hasattr(p, "model_dump") else dict(p)
+            breed = (p.get("breed") or "").strip()
+            ptype = (p.get("type") or "").strip()
+            size = (p.get("size") or "").strip().lower()
+            if size not in ("small", "medium", "large"):
+                size, _matched = classify_breed(breed, ptype)
+            p["size"] = size
+            p["breed"] = breed
+            p["type"] = ptype or "cão"
+            out.append(p)
+            if size == "small": s += 1
+            elif size == "large": l += 1
+            else: m += 1
+    else:
+        s = max(0, int(pets_small or 0))
+        m = max(0, int(pets_medium or 0))
+        l = max(0, int(pets_large or 0))
+    return out, s, m, l
+
+
 class PricingCalcIn(BaseModel):
     room_id: str
     checkin_date: str
@@ -904,6 +954,7 @@ class PricingCalcIn(BaseModel):
     pets_small: int = 0
     pets_medium: int = 0
     pets_large: int = 0
+    pets: List[PetItem] = []
 
 
 @api.post("/pricing/calc")
@@ -913,10 +964,13 @@ async def pricing_calc(data: PricingCalcIn):
     if not room:
         raise HTTPException(404, "Quarto não encontrado")
     settings = await db.settings.find_one({"id": "singleton"}, {"_id": 0}) or {}
+    _pets_list, s, m, l = _normalize_pets_input(
+        [p.model_dump() for p in data.pets], data.pets_small, data.pets_medium, data.pets_large
+    )
     return compute_pricing(
         room, data.checkin_date, data.checkout_date,
         data.adults, data.children_0_3, data.children_4_10,
-        data.pets_small, data.pets_medium, data.pets_large, settings,
+        s, m, l, settings,
     )
 
 
@@ -956,6 +1010,12 @@ async def public_pre_reservation(data: PublicReservationIn):
         status="pending",
     ).model_dump()
     r["is_deleted"] = False
+    # Normalize pets: classify by breed + aggregate counts
+    pets_list, ps, pm, pl = _normalize_pets_input(r.get("pets") or [], r.get("pets_small", 0), r.get("pets_medium", 0), r.get("pets_large", 0))
+    r["pets"] = pets_list
+    r["pets_small"] = ps
+    r["pets_medium"] = pm
+    r["pets_large"] = pl
     # Compute pricing server-side
     try:
         settings0 = await db.settings.find_one({"id": "singleton"}, {"_id": 0}) or {}
@@ -965,7 +1025,7 @@ async def public_pre_reservation(data: PublicReservationIn):
                 r["pricing_breakdown"] = compute_pricing(
                     room0, r["checkin_date"], r["checkout_date"],
                     r.get("adults", 1), r.get("children_0_3", 0), r.get("children_4_10", 0),
-                    r.get("pets_small", 0), r.get("pets_medium", 0), r.get("pets_large", 0), settings0,
+                    ps, pm, pl, settings0,
                 )
                 r["total_amount"] = r["pricing_breakdown"].get("total", 0)
     except Exception as e:

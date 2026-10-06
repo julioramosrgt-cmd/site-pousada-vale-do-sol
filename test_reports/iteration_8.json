@@ -1,0 +1,19 @@
+{
+  "summary": "Iteration 8 testing complete. Backend 11/11 passing (payment link creation + persistence, auth guards, Stripe webhook sig rejection, cron auth, admin manual cron run with sent>=1, regression on holidays/pricing/reservations, crons.yml YAML parse). Frontend: public 'Pagamento' nav scrolls to #pagamento; payment-methods-section with 3 SVG badges (Visa/Mastercard/Elo) and btn-request-payment-link visible. Admin Reservations table shows Hóspede/Quarto/Datas/Reservado em/Origem/Pagamento/Status/Ações; res-created-{id} shows pt-BR datetime, res-source-{id} shows origem label; clicking gen-paylink-{id} on a non-zero reservation shows pay-status='Aguardando' + send-paylink icon. Admin Calendar bars show enriched title tooltip (guest/origem/reservado em/status) and day dialog shows day-res-source-{id} with origin + 'reservado em <datetime>'.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": ["/app/backend/tests/test_iteration8.py", "/app/test_reports/pytest/iteration8.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is ~2066 lines — consider splitting into routers (reservations, stripe, cron, pricing).",
+    "_run_checkin_reminder uses asyncio.create_task(_fire_webhook) and increments 'sent' regardless of webhook config — count may overstate deliveries when webhook URL is empty. Consider only incrementing when webhook actually fired or rename field to 'matched'.",
+    "stripe webhook catch of generic Exception returns 400 even for transient parsing errors; may want 500 for non-signature issues to let Stripe retry."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration8.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "admin@pousada.com / pousada2024",
+  "seed_data_creation": "Created several TEST_QA Hospede reservations via /api/reservations during pytest runs (checkin today+3, today+20). Visible in UI.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All 5 iteration-8 features working end-to-end. Backend pytest suite /app/backend/tests/test_iteration8.py is idempotent and safe to rerun."
+}

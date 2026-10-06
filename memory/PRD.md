@@ -8,26 +8,31 @@ Proprietário de pousada precisa de site público + sistema completo de gestão:
 - Hóspede (público): navega pelo site e envia pré-reserva via formulário FNRH (write-only).
 
 ## Arquitetura
-- Backend FastAPI + MongoDB, JWT auth, RBAC (admin vs público write-only), object storage (Emergent), icalendar parser/generator.
+- Backend FastAPI + MongoDB, JWT auth, RBAC (admin vs público), object storage (Emergent), icalendar, Stripe (sandbox claimable).
 - Frontend React + Tailwind + shadcn/ui, react-router.
 - Design: paleta terracotta + palm green + areia.
+- Agendamentos: `.emergent/crons.yml` (plataforma dispara chamadas HTTP autenticadas por `WEBHOOK_CRON_SECRET`).
 
 ## Implementado
-### 2026-02-28
-- Auth JWT com seed admin, site público, formulário FNRH `/reservar`, painel admin completo, object storage, iCal export/import + auto-sync.
+### 2026-02 — Base
+- Auth JWT, site público, FNRH `/reservar`, painel admin completo (reservas, quartos, calendário, financeiro, iCal, WhatsApp templates, galeria), object storage, iCal auto-sync 15min, voucher PDF, QR code.
 
-### Feb/2026 - Motor de Precificação + Pets
-- `compute_pricing` custom: 10% sex/sáb, 2º adulto -10%, criança 0-3 1ª grátis / demais 65%, pets 20.7/27.6/34.5%.
-- Classificação automática de 156 raças + fallback manual com aviso.
-- Voucher PDF, QR code, WhatsApp webhook. Financeiro CSV/PDF.
+### 2026-02 — Motor de Precificação
+- 10% sex/sáb, 2º adulto −10%, criança 0-3 (1ª grátis / demais 65%), pets 20.7/27.6/34.5%.
+- Classificação automática de 156 raças + fallback manual.
 
-### Feb/2026 - Autocomplete + Feriados Nacionais
-- Autocomplete de raças (156) com navegação por teclado.
-- Feriados nacionais BR (fixos + móveis via Páscoa Gregoriana) aplicam sobretaxa de 10%. Endpoint `GET /api/public/holidays`. Estimativa mostra "🎉 Nome do feriado".
+### 2026-02 — Autocomplete + Feriados Nacionais
+- Dropdown de raças com teclado.
+- Feriados BR fixos + móveis (Páscoa Gregoriana) → sobretaxa 10% automática + badge "🎉 Nome".
+- Endpoint `GET /api/public/holidays`.
 
-### Feb/2026 - Formas de Pagamento (esta sessão)
-- Nova seção "Formas de Pagamento" na home (`PublicSite.js`, âncora `#pagamento`) com ícone, texto sobre cartão de débito/crédito e CTA verde WhatsApp "Solicitar Link de Pagamento via WhatsApp" que abre `wa.me/{whatsapp}` com mensagem pré-preenchida.
-- `data-testid="payment-methods-section"` e `data-testid="btn-request-payment-link"`.
+### 2026-02 — Seção de Pagamento + Link Stripe + Cron (esta sessão)
+- **Nav "Pagamento"** no header → âncora `#pagamento` com scroll suave.
+- **Badges Visa/Mastercard/Elo** (SVG inline) na seção.
+- **Stripe (sandbox claimable)**: `POST /api/reservations/{id}/payment-link` cria Checkout Session dinâmica em BRL. Webhook `POST /api/stripe/webhook` marca reserva como `paid` + `status=confirmed` idempotentemente. Admin tem botões "Gerar link" / "Copiar" / "Enviar por WhatsApp" por reserva. Coluna "Pagamento" mostra badge Pago/Aguardando.
+- **Lembrete 3 dias**: cron diário 12:00 America/Sao_Paulo em `.emergent/crons.yml` → `POST /api/cron/checkin-reminder` (auth Bearer `WEBHOOK_CRON_SECRET`) → envia mensagem com PIX + link Stripe para reservas confirmadas/pendentes. Endpoint admin `/api/admin/cron/checkin-reminder/run` para trigger manual.
+- **Visibilidade admin**: nova coluna "Reservado em" + "Origem" (Direto/Site/OTA) na lista; tooltip e popup do Calendário mostram guest + origem + data de criação + status.
+- Testes: 11/11 backend + frontend ok (iteration_8.json). Tax mode selecionado: **DIY** (Stripe processa pagamento, sem auxílio fiscal; apropriado para hospedagem no Brasil onde o valor já inclui impostos).
 
 ## Backlog / P1
 - Widget de reserva na Home com seletor de datas + hóspedes.
@@ -36,13 +41,18 @@ Proprietário de pousada precisa de site público + sistema completo de gestão:
 - Acessibilidade: `DialogDescription` em modais do admin.
 
 ## Backlog / P2
-- Pacotes/upsells (café premium, passeio) como add-ons pagos.
-- Link de auto-cancelamento por e-mail dentro do prazo.
-- Refatorar `server.py` em serviços (pricing/pdf/ical).
+- Pacotes/upsells pagos.
+- Link de auto-cancelamento por e-mail.
+- Refatorar `server.py` (>2000 linhas) em routers.
 
 ## Backlog / P3
 - Multi-idioma (EN/ES).
 - Área do hóspede logado com histórico.
+
+## Stripe — modo de impostos
+- **Atual: DIY** — Stripe só processa o pagamento.
+- Pode trocar quando quiser via chat (opções restantes: "Stripe calcula o imposto" +0,5% por transação).
+- Chaves ativas são da sandbox claimable; para ir ao vivo, abrir **Manage → Payments** e completar o KYC (as chaves live substituem automaticamente no deploy).
 
 ## Credenciais de Teste
 Ver `/app/memory/test_credentials.md`.

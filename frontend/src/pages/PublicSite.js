@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/apiClient";
-import { Copy, MapPin, Mail, Phone, Instagram, Facebook, MessageCircle, Clock, ArrowRight, Navigation, ExternalLink, ChevronLeft, ChevronRight } from "lucide-react";
+import { Copy, MapPin, Mail, Phone, Instagram, Facebook, MessageCircle, Clock, ArrowRight, Navigation, ExternalLink, ChevronLeft, ChevronRight, CreditCard } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 
@@ -85,6 +85,8 @@ export default function PublicSite() {
 
   const wa = (settings.whatsapp || "").replace(/\D/g, "");
   const waLink = wa ? `https://wa.me/${wa}` : "#";
+  const payLinkMsg = encodeURIComponent("Olá! Gostaria de solicitar um link de pagamento via cartão de crédito para a minha reserva na Pousada Vale do Sol.");
+  const payLink = wa ? `https://wa.me/${wa}?text=${payLinkMsg}` : "#";
   const tel = (settings.phone || settings.whatsapp || "").replace(/\D/g, "");
   const telLink = tel ? `tel:+${tel}` : "#";
 
@@ -287,6 +289,41 @@ export default function PublicSite() {
             <Button data-testid="btn-copy-pix" onClick={copyPix} variant="outline" className="rounded-xl"><Copy className="w-4 h-4 mr-1" />Copiar</Button>
           </div>
           <Link to="/reservar" className="btn-terra mt-5 inline-flex rounded-xl px-4 py-2 font-medium">Iniciar Pré-reserva</Link>
+        </div>
+      </section>
+
+      {/* Payment Methods */}
+      <section id="pagamento" className="bg-[color:var(--pousada-elev)] paper-grain py-14 border-t border-stone-200/70" data-testid="payment-methods-section">
+        <div className="max-w-4xl mx-auto px-6">
+          <div className="rounded-2xl bg-white border border-stone-200/70 shadow-warm p-6 sm:p-10">
+            <div className="flex items-start gap-4">
+              <div className="shrink-0 w-12 h-12 rounded-xl bg-[color:var(--pousada-terracotta)]/10 flex items-center justify-center">
+                <CreditCard className="w-6 h-6 text-[color:var(--pousada-terracotta)]" />
+              </div>
+              <div className="flex-1">
+                <span className="text-xs uppercase tracking-widest text-amber-800/70">Pagamento</span>
+                <h2 className="font-serif text-3xl text-stone-900 mt-1">Formas de Pagamento</h2>
+                <p className="text-stone-700 mt-3 leading-relaxed">
+                  Aceitamos pagamentos por <strong>cartão de débito</strong> e <strong>cartão de crédito</strong>.
+                  Se preferir pagar pelo cartão de crédito, clique no botão abaixo para solicitar o seu link de pagamento com segurança.
+                </p>
+                {wa ? (
+                  <a
+                    href={payLink}
+                    target="_blank"
+                    rel="noreferrer"
+                    data-testid="btn-request-payment-link"
+                    className="mt-6 inline-flex items-center gap-2 rounded-xl bg-[#25D366] hover:bg-[#1ea856] text-white px-5 py-3 font-medium shadow-warm transition hover:scale-[1.02]"
+                  >
+                    <MessageCircle className="w-5 h-5" />
+                    Solicitar Link de Pagamento via WhatsApp
+                  </a>
+                ) : (
+                  <p className="mt-6 text-sm text-stone-500">WhatsApp indisponível no momento — fale conosco pelos canais acima.</p>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 

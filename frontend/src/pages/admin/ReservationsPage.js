@@ -7,10 +7,17 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Trash2, MessageSquare, Paperclip, FileText, Ban } from "lucide-react";
+import { Plus, Trash2, MessageSquare, Paperclip, FileText, Ban, CreditCard, Copy, CheckCircle2 } from "lucide-react";
 import { API } from "@/lib/apiClient";
 
 const STATUS_LABEL = { pending: "Pendente", confirmed: "Confirmada", cancelled: "Cancelada", blocked: "Bloqueado", maintenance: "Manutenção", checked_in: "Check-in", checked_out: "Check-out" };
+const SOURCE_LABEL = { direct: "Direto (admin)", public_form: "Site (público)", ota_import: "OTA (importado)" };
+
+function fmtDateTime(iso) {
+  if (!iso) return "—";
+  try { return new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }); }
+  catch { return iso; }
+}
 
 export default function ReservationsPage() {
   const [rows, setRows] = useState([]);
@@ -105,6 +112,29 @@ export default function ReservationsPage() {
     window.open(`https://wa.me/${wa}?text=${encodeURIComponent(msg)}`, "_blank");
   };
 
+  const generatePayLink = async (r) => {
+    try {
+      const resp = await api.post(`/reservations/${r.id}/payment-link`, {});
+      toast.success("Link de pagamento gerado");
+      load();
+      try { await navigator.clipboard.writeText(resp.data.url); toast.message("Link copiado para a área de transferência"); } catch {}
+    } catch (e) { toast.error(e?.response?.data?.detail || "Falha ao gerar link"); }
+  };
+
+  const sendPayLink = (r) => {
+    if (!r.stripe_payment_url) return toast.error("Gere o link primeiro");
+    const amount = r.stripe_amount || r.total_amount || 0;
+    const msg = `Olá ${r.guest_name}! Segue o link seguro para pagar sua reserva (${r.checkin_date} → ${r.checkout_date}) via cartão de crédito/débito no valor de R$ ${Number(amount).toFixed(2)}: ${r.stripe_payment_url}\nQualquer dúvida é só responder. Obrigado!`;
+    const wa = (r.guest_phone || settings.whatsapp || "").replace(/\D/g, "");
+    window.open(`https://wa.me/${wa}?text=${encodeURIComponent(msg)}`, "_blank");
+  };
+
+  const copyPayLink = async (r) => {
+    if (!r.stripe_payment_url) return;
+    try { await navigator.clipboard.writeText(r.stripe_payment_url); toast.success("Link copiado"); }
+    catch { toast.error("Não foi possível copiar"); }
+  };
+
   const priceOf = (r) => {
     const room = rooms.find((x) => x.id === r.room_id);
     if (!room) return null;
@@ -196,15 +226,19 @@ export default function ReservationsPage() {
                 <th className="text-left p-3">Hóspede</th>
                 <th className="text-left p-3">Quarto</th>
                 <th className="text-left p-3">Datas</th>
+                <th className="text-left p-3">Reservado em</th>
                 <th className="text-left p-3">Origem</th>
+                <th className="text-left p-3">Pagamento</th>
                 <th className="text-left p-3">Status</th>
                 <th className="text-right p-3">Ações</th>
               </tr>
             </thead>
             <tbody>
-              {rows.length === 0 && <tr><td colSpan={6} className="p-6 text-center text-stone-500">Nenhuma reserva</td></tr>}
+              {rows.length === 0 && <tr><td colSpan={8} className="p-6 text-center text-stone-500">Nenhuma reserva</td></tr>}
               {rows.map((r) => {
                 const p = priceOf(r);
+                const srcLabel = SOURCE_LABEL[r.source] || r.source;
+                const paid = r.stripe_payment_status === "paid";
                 return (
                 <tr key={r.id} className="border-t border-stone-100" data-testid={`res-row-${r.id}`}>
                   <td className="p-3">
@@ -220,7 +254,22 @@ export default function ReservationsPage() {
                     )}
                   </td>
                   <td className="p-3 font-mono text-xs">{r.checkin_date} → {r.checkout_date}</td>
-                  <td className="p-3 text-xs uppercase text-stone-500">{r.source}{r.ota_source ? `/${r.ota_source}` : ""}</td>
+                  <td className="p-3 text-xs text-stone-600 font-mono" data-testid={`res-created-${r.id}`}>{fmtDateTime(r.created_at)}</td>
+                  <td className="p-3 text-xs uppercase text-stone-500" data-testid={`res-source-${r.id}`}>{srcLabel}{r.ota_source ? ` · ${r.ota_source}` : ""}</td>
+                  <td className="p-3 text-xs">
+                    {paid ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200" data-testid={`pay-status-${r.id}`}>
+                        <CheckCircle2 className="w-3 h-3" /> Pago
+                      </span>
+                    ) : r.stripe_payment_url ? (
+                      <div className="inline-flex items-center gap-1" data-testid={`pay-status-${r.id}`}>
+                        <span className="px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200">Aguardando</span>
+                        <button type="button" onClick={() => copyPayLink(r)} className="text-stone-500 hover:text-stone-900" title="Copiar link"><Copy className="w-3 h-3" /></button>
+                      </div>
+                    ) : (
+                      <span className="text-stone-400">—</span>
+                    )}
+                  </td>
                   <td className="p-3">
                     <Select value={r.status} onValueChange={(v) => setStatus(r, v)}>
                       <SelectTrigger className="w-36 h-8" data-testid={`status-${r.id}`}><SelectValue /></SelectTrigger>
@@ -236,6 +285,15 @@ export default function ReservationsPage() {
                       )}
                       <Button size="icon" variant="ghost" title="Baixar voucher PDF" onClick={() => downloadVoucher(r)} data-testid={`voucher-${r.id}`}><FileText className="w-4 h-4 text-[color:var(--pousada-terracotta)]" /></Button>
                       <Button size="icon" variant="ghost" title="Enviar PIX no WhatsApp" onClick={() => sendPix(r)} data-testid={`send-pix-${r.id}`}><MessageSquare className="w-4 h-4" /></Button>
+                      {r.stripe_payment_url ? (
+                        <Button size="icon" variant="ghost" title="Enviar link de pagamento (cartão) no WhatsApp" onClick={() => sendPayLink(r)} data-testid={`send-paylink-${r.id}`}>
+                          <CreditCard className="w-4 h-4 text-[#635BFF]" />
+                        </Button>
+                      ) : (
+                        <Button size="icon" variant="ghost" title="Gerar link de pagamento (cartão)" onClick={() => generatePayLink(r)} data-testid={`gen-paylink-${r.id}`}>
+                          <CreditCard className="w-4 h-4 text-stone-500" />
+                        </Button>
+                      )}
                       <Button size="icon" variant="ghost" onClick={() => remove(r)} data-testid={`del-${r.id}`}><Trash2 className="w-4 h-4 text-red-600" /></Button>
                     </div>
                   </td>

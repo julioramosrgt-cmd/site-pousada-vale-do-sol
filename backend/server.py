@@ -27,10 +27,11 @@ import httpx
 import jwt
 import qrcode
 import requests
+import stripe
 from icalendar import Calendar, Event
 from breeds import classify_breed, ALL_BREEDS
 from holidays import get_brazilian_holidays, is_brazilian_holiday
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, UploadFile, File, Query, Header, Response, status
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, UploadFile, File, Query, Header, Response, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -62,6 +63,13 @@ EMAIL_BASE_URL = "https://integrations.emergentagent.com"
 EMAIL_KEY = os.environ.get("EMERGENT_EMAIL_KEY")
 EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "Pousada")
 EMAIL_REPLY_TO = os.environ.get("EMAIL_REPLY_TO")
+
+# Stripe
+stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+
+# Cron webhook secret (platform-managed scheduled tasks)
+WEBHOOK_CRON_SECRET = os.environ.get("WEBHOOK_CRON_SECRET", "")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("pousada")
@@ -280,6 +288,11 @@ class Reservation(BaseModel):
     accepted_terms: bool = False
     ota_uid: Optional[str] = None  # for imported events
     payment_receipt_url: Optional[str] = ""
+    # Stripe payment link
+    stripe_session_id: Optional[str] = None
+    stripe_payment_url: Optional[str] = None
+    stripe_payment_status: Optional[str] = None  # pending | paid | failed | expired
+    stripe_amount: Optional[float] = None
     # New pricing fields
     children_0_3: int = 0
     children_4_10: int = 0
@@ -930,6 +943,155 @@ async def public_holidays(year: int = Query(default=None)):
     y_now = get_brazilian_holidays(year)
     y_next = get_brazilian_holidays(year + 1)
     return {"year": year, "holidays": {**y_now, **y_next}}
+
+
+# ----- Stripe payment links (admin generates per reservation) -----
+class StripePaymentLinkIn(BaseModel):
+    amount: Optional[float] = None  # BRL; if omitted uses reservation total_amount
+
+
+@api.post("/reservations/{res_id}/payment-link")
+async def create_payment_link(res_id: str, data: StripePaymentLinkIn, request: Request, user=Depends(require_admin)):
+    if not stripe.api_key:
+        raise HTTPException(503, "Stripe não configurado")
+    r = await db.reservations.find_one({"id": res_id}, {"_id": 0})
+    if not r:
+        raise HTTPException(404, "Reserva não encontrada")
+    amount = float(data.amount) if data.amount else float(r.get("total_amount") or 0)
+    if amount <= 0:
+        raise HTTPException(400, "Valor inválido — defina o total da reserva ou envie `amount`")
+    origin = str(request.base_url).rstrip("/")
+    try:
+        session = stripe.checkout.Session.create(
+            line_items=[{
+                "price_data": {
+                    "currency": "brl",
+                    "unit_amount": int(round(amount * 100)),
+                    "product_data": {
+                        "name": "Reserva – Pousada Vale do Sol",
+                        "description": f"{r.get('guest_name') or 'Hóspede'} · {r.get('checkin_date')} → {r.get('checkout_date')}",
+                    },
+                },
+                "quantity": 1,
+            }],
+            mode="payment",
+            success_url=f"{origin}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{origin}/payment/cancel",
+            metadata={"reservation_id": res_id, "guest_name": r.get("guest_name") or ""},
+        )
+    except stripe.error.StripeError as e:
+        logger.error(f"stripe create failed: {e}")
+        raise HTTPException(502, f"Falha ao criar link: {e.user_message or str(e)}")
+
+    await db.reservations.update_one(
+        {"id": res_id},
+        {"$set": {
+            "stripe_session_id": session.id,
+            "stripe_payment_url": session.url,
+            "stripe_payment_status": "pending",
+            "stripe_amount": amount,
+            "updated_at": now_iso(),
+        }},
+    )
+    return {"url": session.url, "session_id": session.id, "amount": amount}
+
+
+@api.post("/stripe/webhook")
+async def stripe_webhook(request: Request):
+    payload = await request.body()
+    sig = request.headers.get("stripe-signature", "")
+    try:
+        event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
+    except stripe.error.SignatureVerificationError:
+        raise HTTPException(400, "Invalid signature")
+    except Exception as e:
+        logger.warning(f"stripe webhook parse error: {e}")
+        raise HTTPException(400, "Invalid payload")
+
+    obj = event["data"]["object"]
+    t = event["type"]
+    reservation_id = (obj.get("metadata") or {}).get("reservation_id")
+    if not reservation_id:
+        return {"status": "ignored"}
+
+    if t == "checkout.session.completed":
+        await db.reservations.update_one(
+            {"id": reservation_id, "stripe_payment_status": {"$ne": "paid"}},
+            {"$set": {
+                "stripe_payment_status": obj.get("payment_status", "paid"),
+                "status": "confirmed",
+                "updated_at": now_iso(),
+            }},
+        )
+    elif t == "checkout.session.async_payment_succeeded":
+        await db.reservations.update_one(
+            {"id": reservation_id},
+            {"$set": {"stripe_payment_status": "paid", "status": "confirmed", "updated_at": now_iso()}},
+        )
+    elif t in ("checkout.session.async_payment_failed",):
+        await db.reservations.update_one(
+            {"id": reservation_id},
+            {"$set": {"stripe_payment_status": "failed", "updated_at": now_iso()}},
+        )
+    elif t == "checkout.session.expired":
+        await db.reservations.update_one(
+            {"id": reservation_id},
+            {"$set": {"stripe_payment_status": "expired", "updated_at": now_iso()}},
+        )
+    return {"status": "ok"}
+
+
+# ----- Scheduled task: check-in reminder (3 days before) -----
+async def _run_checkin_reminder():
+    settings = await db.settings.find_one({"id": "primary"}, {"_id": 0}) or {}
+    webhook = (settings.get("whatsapp_webhook_url") or "").strip()
+    target_date = (datetime.now(timezone.utc) + timedelta(days=3)).date().isoformat()
+    cur = db.reservations.find(
+        {"checkin_date": target_date, "status": {"$in": ["confirmed", "pending"]}},
+        {"_id": 0},
+    )
+    rooms_by_id = {r["id"]: r async for r in db.rooms.find({}, {"_id": 0})}
+    sent = 0
+    async for r in cur:
+        room = rooms_by_id.get(r.get("room_id") or "", {})
+        pay_url = r.get("stripe_payment_url") or ""
+        parts = [
+            f"🏨 *Lembrete de hospedagem* — {settings.get('name') or 'Pousada'}",
+            f"Olá {r.get('guest_name') or 'hóspede'}! Sua estadia começa em 3 dias.",
+            f"📅 {r.get('checkin_date')} → {r.get('checkout_date')}",
+            f"🛏️ Quarto: {room.get('name') or '—'}",
+        ]
+        if settings.get("pix_key"):
+            parts.append(f"💠 PIX: {settings['pix_key']} ({settings.get('pix_key_type') or 'chave'})")
+        if pay_url:
+            parts.append(f"💳 Link de pagamento (cartão): {pay_url}")
+        parts.append("Qualquer dúvida, é só responder. Até breve! 🌿")
+        msg = "\n".join(parts)
+        if webhook:
+            asyncio.create_task(_fire_webhook(webhook, msg))
+        # per-guest WhatsApp direct push also, if a user-level webhook is set via settings
+        sent += 1
+    return sent
+
+
+@api.post("/cron/checkin-reminder")
+async def cron_checkin_reminder(request: Request, authorization: Optional[str] = Header(default=None)):
+    # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
+    expected = WEBHOOK_CRON_SECRET or ""
+    token = ""
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
+    if not expected or not hmac.compare_digest(token, expected):
+        raise HTTPException(401, "unauthorized")
+    asyncio.create_task(_run_checkin_reminder())
+    return {"status": "accepted"}
+
+
+@api.post("/admin/cron/checkin-reminder/run")
+async def admin_trigger_reminder(user=Depends(require_admin)):
+    """Manual trigger for testing — admin only."""
+    count = await _run_checkin_reminder()
+    return {"status": "ok", "scanned_date": (datetime.now(timezone.utc) + timedelta(days=3)).date().isoformat(), "sent": count}
 
 
 def _normalize_pets_input(pets: list, pets_small: int, pets_medium: int, pets_large: int):

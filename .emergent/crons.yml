@@ -1,0 +1,9 @@
+crons:
+  - name: checkin-reminder
+    description: "Dispara lembretes WhatsApp diariamente para hóspedes com check-in em 3 dias"
+    cron: "0 12 * * *"
+    timezone: "America/Sao_Paulo"
+    endpoint: "{{BASE_URL}}/api/cron/checkin-reminder"
+    method: POST
+    # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
+    enabled: true

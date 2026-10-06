@@ -13,6 +13,13 @@ const STATUS_COLOR = {
   pending: "#ED6C02", confirmed: "#2E7D32", cancelled: "#D32F2F",
   blocked: "#616161", maintenance: "#8D6E63", checked_in: "#0288D1", checked_out: "#7B1FA2",
 };
+const SOURCE_LABEL = { direct: "Direto", public_form: "Site", ota_import: "OTA" };
+
+function fmtDateTime(iso) {
+  if (!iso) return "—";
+  try { return new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }); }
+  catch { return iso; }
+}
 
 function ymd(d) { return d.toISOString().slice(0, 10); }
 function monthMatrix(year, month) {
@@ -103,11 +110,15 @@ export default function CalendarPage() {
               >
                 <div className={`text-xs font-mono ${inMonth ? "text-stone-700" : "text-stone-400"}`}>{d.getDate()}</div>
                 <div className="mt-1 space-y-1">
-                  {items.slice(0, 3).map((r) => (
-                    <div key={r.id} className="px-1.5 py-0.5 rounded text-[10px] text-white truncate" title={`${r.guest_name} · ${STATUS_LABEL[r.status]}`} style={{ background: STATUS_COLOR[r.status] || "#78716C" }}>
-                      {r.guest_name || "Reservado"}
-                    </div>
-                  ))}
+                  {items.slice(0, 3).map((r) => {
+                    const srcShort = SOURCE_LABEL[r.source] || r.source;
+                    const tip = `${r.guest_name || "Reservado"}\nOrigem: ${srcShort}${r.ota_source ? ` · ${r.ota_source}` : ""}\nReservado em: ${fmtDateTime(r.created_at)}\nStatus: ${STATUS_LABEL[r.status]}`;
+                    return (
+                      <div key={r.id} className="px-1.5 py-0.5 rounded text-[10px] text-white truncate" title={tip} style={{ background: STATUS_COLOR[r.status] || "#78716C" }}>
+                        {r.guest_name || "Reservado"}
+                      </div>
+                    );
+                  })}
                   {items.length > 3 && <div className="text-[10px] text-stone-500">+{items.length - 3}</div>}
                 </div>
               </button>
@@ -138,6 +149,10 @@ export default function CalendarPage() {
                     <div className="text-sm text-stone-600 space-y-1">
                       <div className="flex items-center gap-2"><BedDouble className="w-4 h-4 text-stone-500" />{roomName(r.room_id)}</div>
                       <div className="font-mono text-xs">{r.checkin_date} → {r.checkout_date}</div>
+                      <div className="text-xs text-stone-500" data-testid={`day-res-source-${r.id}`}>
+                        <span className="uppercase tracking-widest">{SOURCE_LABEL[r.source] || r.source}</span>
+                        {r.ota_source ? ` · ${r.ota_source}` : ""} · reservado em {fmtDateTime(r.created_at)}
+                      </div>
                       {r.guest_phone && <div className="flex items-center gap-2"><Phone className="w-4 h-4 text-stone-500" />{r.guest_phone}</div>}
                       {r.guest_email && <div className="flex items-center gap-2"><Mail className="w-4 h-4 text-stone-500" />{r.guest_email}</div>}
                     </div>

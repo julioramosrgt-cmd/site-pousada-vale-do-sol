@@ -123,6 +123,7 @@ export default function PublicSite() {
           <div className="flex items-center gap-3 text-sm">
             <a href="#galeria" className="hidden sm:inline text-stone-700 hover:text-stone-900">Galeria</a>
             <a href="#localizacao" className="hidden sm:inline text-stone-700 hover:text-stone-900">Como chegar</a>
+            <a href="#pagamento" data-testid="nav-pagamento" className="hidden sm:inline text-stone-700 hover:text-stone-900">Pagamento</a>
             <a href="#contato" className="hidden sm:inline text-stone-700 hover:text-stone-900">Contato</a>
             <Link to="/reservar" data-testid="btn-reserve-now" className="btn-terra rounded-xl px-4 py-2 text-sm font-medium inline-flex items-center gap-1">
               Reservar <ArrowRight className="w-4 h-4" />
@@ -307,6 +308,28 @@ export default function PublicSite() {
                   Aceitamos pagamentos por <strong>cartão de débito</strong> e <strong>cartão de crédito</strong>.
                   Se preferir pagar pelo cartão de crédito, clique no botão abaixo para solicitar o seu link de pagamento com segurança.
                 </p>
+                <div className="mt-5 flex items-center gap-3 flex-wrap" aria-label="Bandeiras aceitas" data-testid="payment-badges">
+                  {/* Visa */}
+                  <span title="Visa" className="inline-flex items-center justify-center h-9 w-14 rounded-md bg-white border border-stone-200 shadow-sm">
+                    <svg viewBox="0 0 48 16" aria-hidden="true" className="h-4"><text x="0" y="13" fontFamily="Arial,Helvetica,sans-serif" fontWeight="900" fontStyle="italic" fontSize="16" fill="#1A1F71">VISA</text></svg>
+                  </span>
+                  {/* Mastercard */}
+                  <span title="Mastercard" className="inline-flex items-center justify-center h-9 w-14 rounded-md bg-white border border-stone-200 shadow-sm">
+                    <svg viewBox="0 0 36 22" aria-hidden="true" className="h-5">
+                      <circle cx="14" cy="11" r="9" fill="#EB001B" />
+                      <circle cx="22" cy="11" r="9" fill="#F79E1B" />
+                      <path d="M18 4.5a9 9 0 0 1 0 13 9 9 0 0 1 0-13z" fill="#FF5F00" />
+                    </svg>
+                  </span>
+                  {/* Elo */}
+                  <span title="Elo" className="inline-flex items-center justify-center h-9 w-14 rounded-md bg-black border border-stone-900 shadow-sm">
+                    <svg viewBox="0 0 48 20" aria-hidden="true" className="h-4">
+                      <circle cx="10" cy="10" r="7" fill="none" stroke="#FFF200" strokeWidth="2.4" />
+                      <circle cx="10" cy="10" r="2.4" fill="#EC1C24" />
+                      <text x="20" y="14" fontFamily="Arial,Helvetica,sans-serif" fontWeight="900" fontSize="12" fill="#FFF">elo</text>
+                    </svg>
+                  </span>
+                </div>
                 {wa ? (
                   <a
                     href={payLink}

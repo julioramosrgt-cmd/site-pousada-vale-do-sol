@@ -1,0 +1,49 @@
+{
+  "summary": "Tested the HR module (iteration 9). Backend: 30/30 pytest tests pass in /app/backend/tests/test_hr_module.py. They cover employees CRUD with the new fields, schedule generation with Sunday rotation and weekday swap, all 5 CLT violation rules, shift edits (400 on bad time), the punch sequence with 429/400 limits, NSR and hash chain, RH adjust and void, timesheet worked/extra/night/absence numbers, both PDFs, vacation rules, approve/reject/direct and approve->is_vacation shifts, INSS/IRRF 2026 math for 5 salary/dependent cases, the dashboard lists, and auth isolation in both directions. Frontend: RH login, all 6 nav tabs, Escala grid edit dialog and violations panel, Ponto add-punch/void/PDF, Férias approve/reject/lançar, Folha table/badge/PDF, Colaborador login/punch/receipt/429 toast, Meu ponto timesheet, and Férias request/cancel all work end-to-end. Two real UI bugs: (1) the WHOLE APP CRASHES on any FastAPI 422 validation error, because the array in e.response.data.detail is passed straight to toast.error; (2) on mobile (390px) the 'Gerar escala' button and the employee select are pushed off-screen. Regression: '/' and '/reservar' load; /admin/login redirects externally.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "DELETE /api/hr/employees/{id}", "issue": "Deletes only the employee and its shifts; time_records and vacations are left orphaned (3 time records + 4 vacations stayed behind for TEST_UIzz). Either keep them on purpose (Portaria 671 retention, so prefer a soft delete / status=inactive) or cascade."},
+      {"endpoint": "POST /api/employee/vacations, /api/hr/vacations", "issue": "days<5, days>30 and sell_days>10 are rejected by Pydantic with 422 (detail is an array), not the friendly 400 messages in hr_rules.validate_vacation_request, so those PT-BR messages are never reached. This is what triggers the frontend crash below."},
+      {"endpoint": "hr_rules.generate_shifts / compute_day", "issue": "The schedule ignores national holidays. A scheduled holiday with no punches is flagged 'Falta' and deducted, along with the lost DSR (e.g. 12/10 Nossa Senhora Aparecida showed 'Falta'). Consider marking holidays as rest/feriado in generation, or not counting them as faltas."},
+      {"endpoint": "hr_rules.generate_shifts", "issue": "When the Sunday off falls in the first week of the month and that week's rest days are in the previous month, no weekday is swapped. The employee ends up with 3 rest days that week, because the rotation index resets every month."},
+      {"endpoint": "hr_rules.calc_payroll", "issue": "Full 30-day salary even when hire_date falls inside the month (no proportional salary). Acceptable for a prévia but worth noting."},
+      {"endpoint": "hr_rules.compute_day", "issue": "There is no flag when daily overtime is above 2h (art. 59). A day with 08:00–19:30 and no break showed HE 3:30 with only the 'Intervalo < 1h' flag."},
+      {"endpoint": "POST /api/employee/punch", "issue": "NSR/hash creation is not atomic (read last hash, then insert). Concurrent punches could fork the hash chain. Low risk with a small staff."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Error toasts in PontoPage.saveAdj/onVoid, VacationForm.submit (RH Lançar férias and Colaborador Pedir férias), and likely other forms", "issue": "toast.error(e?.response?.data?.detail) gets an ARRAY of objects on a 422, so React throws 'Objects are not valid as a React child' and the whole app shows a runtime error screen. Reproduced: (a) RH Ponto > Incluir marcação with reason 'abc'; (b) Colaborador Férias > Pedir férias with days=4. Fix: add a helper (e.g. errMsg(e) in hrUtils) that maps an array detail to detail.map(d=>d.msg).join(', ') and use it everywhere. Also add client-side checks (reason >= 5 chars; days 5–30; sell 0–10) before submitting. window.prompt in void also needs a length check.", "selector": "[data-testid='adj-save'], [data-testid='vac-submit'], [data-testid^='void-']", "priority": "HIGH"},
+      {"component": "SchedulePage header (mobile 390px)", "issue": "The 'ml-auto flex items-end gap-3' container does not wrap. 'Gerar escala' sits at x=420 (off-screen) and the employee select is clipped (188–408px), so the schedule cannot be generated on a phone. Add flex-wrap / w-full on mobile.", "selector": "[data-testid='btn-generate-schedule'], [data-testid='sched-emp']", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "RH Dashboard header", "issues": ["Date renders as 'Terça-Feira, 20 De Outubro' (Title Case from CSS capitalize). PT-BR convention is 'Terça-feira, 20 de outubro'."]},
+      {"screen": "SchedulePage", "issues": ["The default month uses new Date().toISOString() (UTC), so after 21:00 BRT on the last day of the month it shows next month. Use currentMonth() from hrUtils. monthMatrix also uses toISOString(), which would shift dates for UTC+ browsers."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_hr_module.py", "/app/test_reports/pytest/pytest_hr.xml"],
+  "action_items": [
+    "HIGH: Add a safe API-error formatter for 422 array details and use it in every toast.error across rh/colaborador pages and the hr components (app currently crashes)",
+    "Add client-side validation for adjust reason (>=5), void reason (>=5) and vacation days/sell ranges",
+    "Make the SchedulePage header wrap on mobile so 'Gerar escala' and the employee select are reachable at 390px",
+    "Decide how holidays work in schedule generation and absences (currently a non-worked scheduled holiday = Falta + lost DSR)",
+    "Decide whether DELETE employee should soft-delete (keep time_records for Portaria 671) or cascade",
+    "Optional: use currentMonth() in SchedulePage; fix the PT-BR date casing on the dashboard"
+  ],
+  "critical_code_review_comments": [
+    "server.py is 2697 lines; HR module (~650 lines) should be moved into its own router module (e.g. hr_routes.py)",
+    "Vacation range validation is split between Pydantic (422) and hr_rules (400); unify so users get the PT-BR messages",
+    "downloadPdf revokes the object URL right after a.click(); works in Chromium but may cancel downloads in some browsers — revoke in a setTimeout",
+    "Dashboard 'late' detection compares HH:MM strings and assumes the shift does not cross midnight"
+  ],
+  "updated_files": ["/app/backend/tests/test_hr_module.py"],
+  "success_rate": {"backend": "100% (30/30)", "frontend": "~88% (all flows work; 422 crash + mobile escala header broken)"},
+  "test_credentials": "admin admin@pousada.com / pousada2024; employee test_maria@pousada.com / 1234. NOTE: /app/memory/test_credentials.md does NOT list the employee portal credentials or the /rh and /colaborador URLs — please add them.",
+  "seed_data_creation": "Created and removed TEST_Joao, TEST_Folha* and TEST_UIzz employees together with their shifts, time_records and vacations. TEST_Maria was left untouched (3 time records, 1 pending vacation). Global NSR counter advanced to ~16, leaving gaps from the deleted test records.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run the HR suite with `pytest /app/backend/tests/test_hr_module.py -n 0` (xdist is on by default and breaks the ordered, shared-state tests). The punch tests backdate the last record's ts in Mongo to get past the 60s rate limit. The tests self-clean TEST_ employees. To retest the UI crash: RH Ponto > Incluir marcação with reason 'abc', or Colaborador Férias with days=4.",
+  "rca of the issue": "422 crash: FastAPI/Pydantic returns detail as a list of {type,loc,msg,input,ctx,url}. The frontend does toast.error(e?.response?.data?.detail || 'Falha'), and sonner renders the list as a React child, which throws. That unmounts the tree and the Emergent runtime error overlay appears. Mitigation: normalize the error (string vs array) before calling toast."
+}

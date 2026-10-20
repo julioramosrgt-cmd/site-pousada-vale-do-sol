@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { currentMonth } from "@/lib/hrUtils";
 import { api } from "@/lib/apiClient";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -16,13 +17,13 @@ function monthMatrix(month) {
   const days = new Date(y, m, 0).getDate();
   return Array.from({ length: days }, (_, i) => {
     const d = new Date(y, m - 1, i + 1);
-    return { date: d.toISOString().slice(0, 10), weekday: (d.getDay() + 6) % 7, dayNum: i + 1 };
+    return { date: `${month}-${String(i + 1).padStart(2, "0")}`, weekday: (d.getDay() + 6) % 7, dayNum: i + 1 };
   });
 }
 
 export default function SchedulePage() {
   const [employees, setEmployees] = useState([]);
-  const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [month, setMonth] = useState(currentMonth);
   const [empId, setEmpId] = useState("");
   const [shifts, setShifts] = useState([]);
   const [violations, setViolations] = useState([]);
@@ -76,10 +77,10 @@ export default function SchedulePage() {
           <h1 className="font-serif text-2xl text-stone-900">Escala 5×2</h1>
           <p className="text-sm text-stone-500">Gerador automático com rodízio de domingos e validação CLT. Clique em um dia para editar.</p>
         </div>
-        <div className="ml-auto flex items-end gap-3">
+        <div className="w-full sm:w-auto sm:ml-auto flex flex-wrap items-end gap-3">
           <div><Label className="text-xs">Mês</Label>
             <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="w-40" data-testid="sched-month" /></div>
-          <div className="min-w-[220px]"><Label className="text-xs">Colaborador</Label>
+          <div className="w-full sm:w-auto sm:min-w-[220px]"><Label className="text-xs">Colaborador</Label>
             <Select value={empId} onValueChange={setEmpId}>
               <SelectTrigger data-testid="sched-emp"><SelectValue placeholder="Selecione" /></SelectTrigger>
               <SelectContent>{employees.map((e) => <SelectItem key={e.id} value={e.id}>{e.name}</SelectItem>)}</SelectContent>

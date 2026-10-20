@@ -14,6 +14,9 @@ export const VacationForm = ({ open, onOpenChange, periods, onSubmit, title }) =
   const period = f.period_start || eligible[0]?.period_start || "";
 
   const submit = async () => {
+    const days = Number(f.days), sell = Number(f.sell_days);
+    if (days < 5 || days > 30) return toast.error("Dias de descanso: entre 5 e 30");
+    if (sell < 0 || sell > 10) return toast.error("Abono: entre 0 e 10 dias (art. 143)");
     setBusy(true);
     try {
       await onSubmit({ ...f, period_start: period, days: Number(f.days), sell_days: Number(f.sell_days) });

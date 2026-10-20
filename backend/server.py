@@ -2154,7 +2154,7 @@ async def hr_create_employee(data: EmployeeIn, user=Depends(require_admin_role))
 
 @api.get("/hr/employees")
 async def hr_list_employees(user=Depends(require_admin)):
-    cur = db.employees.find({}, {"_id": 0, "portal_password_hash": 0}).sort("name", 1)
+    cur = db.employees.find({"deleted": {"$ne": True}}, {"_id": 0, "portal_password_hash": 0}).sort("name", 1)
     return [e async for e in cur]
 
 
@@ -2177,8 +2177,8 @@ async def hr_update_employee(eid: str, data: EmployeeIn, user=Depends(require_ad
 
 @api.delete("/hr/employees/{eid}")
 async def hr_delete_employee(eid: str, user=Depends(require_admin_role)):
-    await db.employees.delete_one({"id": eid})
-    await db.shifts.delete_many({"employee_id": eid})
+    await db.employees.update_one({"id": eid}, {"$set": {"status": "inactive", "deleted": True, "email": "", "updated_at": now_iso()}})
+    await db.shifts.delete_many({"employee_id": eid, "date": {"$gte": datetime.now(hr_rules.BR_TZ).date().isoformat()}})
     return {"ok": True}
 
 
@@ -2368,8 +2368,8 @@ class VoidIn(BaseModel):
 class VacationIn(BaseModel):
     period_start: str
     start_date: str
-    days: int = Field(ge=5, le=30)
-    sell_days: int = Field(default=0, ge=0, le=10)
+    days: int
+    sell_days: int = 0
     notes: Optional[str] = ""
 
 
@@ -2636,7 +2636,7 @@ async def hr_decide_vacation(vid: str, data: VacationDecisionIn, user=Depends(re
 # ----- Folha (prévia) -----
 async def _payroll_for(emp: dict, month: str) -> dict:
     ts = await build_timesheet(emp, month)
-    p = hr_rules.calc_payroll(emp, ts["summary"], ts["working_days"], ts["rest_days"])
+    p = hr_rules.calc_payroll(emp, ts["summary"], ts["working_days"], ts["rest_days"], month)
     p["month"] = month
     return p
 

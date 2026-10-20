@@ -9,7 +9,7 @@ const monthMatrix = (month) => {
   const days = new Date(y, m, 0).getDate();
   return Array.from({ length: days }, (_, i) => {
     const d = new Date(y, m - 1, i + 1);
-    return { date: d.toISOString().slice(0, 10), weekday: (d.getDay() + 6) % 7, dayNum: i + 1 };
+    return { date: `${month}-${String(i + 1).padStart(2, "0")}`, weekday: (d.getDay() + 6) % 7, dayNum: i + 1 };
   });
 };
 

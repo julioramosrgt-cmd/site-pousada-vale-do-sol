@@ -54,7 +54,7 @@ export default function RhDashboard() {
   return (
     <div className="space-y-6" data-testid="rh-dashboard">
       <div>
-        <h1 className="font-serif text-2xl text-stone-900 capitalize">{new Date(data.today + "T12:00").toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "long" })}</h1>
+        <h1 className="font-serif text-2xl text-stone-900">{(() => { const s = new Date(data.today + "T12:00").toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "long" }); return s.charAt(0).toUpperCase() + s.slice(1); })()}</h1>
         <p className="text-sm text-stone-500">Agora: {data.now} · atualiza a cada minuto pelo ponto eletrônico</p>
       </div>
 

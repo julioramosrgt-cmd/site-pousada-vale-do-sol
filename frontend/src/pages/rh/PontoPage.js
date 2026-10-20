@@ -27,11 +27,14 @@ export default function PontoPage() {
   const onVoid = async (r) => {
     const reason = window.prompt(`Justificativa para desconsiderar a marcação ${r.time.slice(0, 5)} (mín. 5 caracteres):`);
     if (!reason) return;
+    if (reason.trim().length < 5) return toast.error("Justificativa precisa de no mínimo 5 caracteres");
     try { await api.post(`/hr/time-records/${r.id}/void`, { reason }); toast.success("Marcação desconsiderada"); load(); }
     catch (e) { toast.error(e?.response?.data?.detail || "Falha"); }
   };
 
   const saveAdj = async () => {
+    if (!adj.date || !adj.time) return toast.error("Informe data e hora");
+    if (adj.reason.trim().length < 5) return toast.error("Justificativa precisa de no mínimo 5 caracteres");
     try { await api.post("/hr/time-records", { ...adj, employee_id: empId }); toast.success("Marcação incluída"); setAdj(null); load(); }
     catch (e) { toast.error(e?.response?.data?.detail || "Falha"); }
   };

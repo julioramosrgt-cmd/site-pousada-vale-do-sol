@@ -43,7 +43,6 @@ def generate_shifts(employee: dict, year: int, month: int, new_id) -> List[dict]
     """5x2 com rodízio de domingos (1 domingo de folga a cada N semanas)."""
     _, days = cal.monthrange(year, month)
     rest_days = set(employee.get("weekly_rest_days") or [5, 6])
-    every = int(employee.get("sunday_rest_every_weeks") or 3)
     start_t = employee.get("default_shift_start") or "08:00"
     end_t = employee.get("default_shift_end") or "17:00"
     shifts = []
@@ -51,13 +50,21 @@ def generate_shifts(employee: dict, year: int, month: int, new_id) -> List[dict]
         d = date(year, month, day)
         wd = d.weekday()
         is_rest = wd in rest_days
+        hol, hol_name = is_brazilian_holiday(d)
         shifts.append({"id": new_id(), "employee_id": employee["id"], "date": d.isoformat(), "weekday": wd,
                        "start_time": None if is_rest else start_t, "end_time": None if is_rest else end_t,
                        "is_rest": is_rest, "is_dsr": is_rest and wd == 6, "is_vacation": False,
-                       "source": "auto", "notes": ""})
-    if 6 in rest_days:
-        return shifts
-    # Rodízio: domingo de folga a cada `every` semanas (Lei 10.101/2000 art. 6º)
+                       "is_holiday": hol, "source": "auto", "notes": hol_name or ""})
+    if 6 not in rest_days:
+        _sunday_rotation(shifts, employee, start_t, end_t)
+    for s in shifts:
+        if s["is_holiday"] and not s["is_rest"]:
+            s.update(is_rest=True, start_time=None, end_time=None)
+    return shifts
+
+
+def _sunday_rotation(shifts: List[dict], employee: dict, start_t: str, end_t: str):
+    every = int(employee.get("sunday_rest_every_weeks") or 3)
     sundays = [s for s in shifts if s["weekday"] == 6]
     offset = int(employee.get("sunday_offset") or 0) % every
     for idx, sun in enumerate(sundays):
@@ -67,9 +74,11 @@ def generate_shifts(employee: dict, year: int, month: int, new_id) -> List[dict]
         sun_d = date.fromisoformat(sun["date"])
         week = [s for s in shifts if sun_d - timedelta(days=6) <= date.fromisoformat(s["date"]) < sun_d]
         swap = next((s for s in reversed(week) if s["is_rest"]), None)
+        if not swap:
+            nxt = [s for s in shifts if sun_d < date.fromisoformat(s["date"]) <= sun_d + timedelta(days=6)]
+            swap = next((s for s in nxt if s["is_rest"] and s["weekday"] != 6), None)
         if swap:
             swap.update(is_rest=False, is_dsr=False, start_time=start_t, end_time=end_t)
-    return shifts
 
 
 def validate_schedule(shifts: List[dict], employee: dict) -> List[dict]:
@@ -154,9 +163,11 @@ def compute_day(records: List[dict], shift: Optional[dict], day: str) -> dict:
     if worked > 6 * 60 and (not breaks or max(breaks) < 60):
         flags.append("Intervalo < 1h (art. 71)")
     past = day < datetime.now(BR_TZ).date().isoformat()
-    absent = expected > 0 and not valid and not is_vacation and past
+    absent = expected > 0 and not valid and not is_vacation and not is_hol and past
     if absent:
         flags.append("Falta")
+    if diff > 120:
+        flags.append("HE acima de 2h (art. 59)")
     extra = max(diff, 0) if not absent else 0
     extra_100 = worked if (is_rest or is_hol) and worked else 0
     return {
@@ -219,8 +230,8 @@ def validate_vacation_request(period: dict, start: date, days: int, sell_days: i
         return "Período aquisitivo ainda não completado"
     if start <= today:
         return "A data de início deve ser futura"
-    if days < 5:
-        return "Cada período deve ter no mínimo 5 dias (art. 134 §1º)"
+    if days < 5 or days > 30:
+        return "Cada período deve ter entre 5 e 30 dias (art. 134 §1º)"
     if sell_days < 0 or sell_days > 10:
         return "Abono pecuniário limitado a 1/3 (10 dias — art. 143)"
     available = period["balance"] - period["pending_days"]
@@ -268,8 +279,13 @@ def calc_irrf(gross: float, inss: float, dependents: int) -> dict:
             "tax_table": round(tax, 2), "reduction": round(reduction, 2), "value": round(tax - reduction, 2)}
 
 
-def calc_payroll(employee: dict, summary: dict, working_days: int, rest_days: int) -> dict:
+def calc_payroll(employee: dict, summary: dict, working_days: int, rest_days: int, month: str = "") -> dict:
     salary = float(employee.get("base_salary") or 0)
+    hire = employee.get("hire_date") or ""
+    salary_due, days_ref = salary, 30
+    if month and hire[:7] == month:
+        days_ref = max(30 - int(hire[8:10]) + 1, 0)
+        salary_due = salary / 30 * days_ref
     divisor = int(employee.get("weekly_hours") or 44) * 5
     hour = salary / divisor if divisor else 0
     day_value = salary / 30
@@ -280,14 +296,14 @@ def calc_payroll(employee: dict, summary: dict, working_days: int, rest_days: in
     dsr = round((e50 + e100 + night) / working_days * rest_days, 2) if working_days else 0.0
     absences = round(summary["absences"] * day_value + summary["absence_weeks"] * day_value, 2)
     delays = round(summary["missing_min"] / 60 * hour, 2)
-    gross = round(max(salary + e50 + e100 + night + dsr - absences - delays, 0), 2)
+    gross = round(max(salary_due + e50 + e100 + night + dsr - absences - delays, 0), 2)
     inss = calc_inss(gross)
     irrf = calc_irrf(gross, inss, int(employee.get("dependents") or 0))
     return {
         "employee_id": employee["id"], "employee_name": employee["name"], "role_title": employee.get("role_title"),
         "base_salary": round(salary, 2), "hour_value": round(hour, 2),
         "earnings": [
-            {"code": "001", "label": "Salário base", "ref": "30d", "value": round(salary, 2)},
+            {"code": "001", "label": "Salário base" + (" (proporcional)" if days_ref < 30 else ""), "ref": f"{days_ref}d", "value": round(salary_due, 2)},
             {"code": "010", "label": "Horas extras 50%", "ref": f"{summary['extra50_min'] / 60:.2f}h", "value": e50},
             {"code": "011", "label": "Horas extras 100%", "ref": f"{summary['extra100_min'] / 60:.2f}h", "value": e100},
             {"code": "020", "label": "Adicional noturno 20%", "ref": f"{night_hours:.2f}h", "value": night},

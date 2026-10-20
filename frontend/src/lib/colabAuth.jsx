@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import axios from "axios";
+import { normalizeDetail } from "@/lib/apiClient";
 
 const COLAB_TOKEN_KEY = "pousada_colab_token";
 const BASE = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -10,6 +11,7 @@ colabApi.interceptors.request.use((cfg) => {
   if (t) cfg.headers.Authorization = `Bearer ${t}`;
   return cfg;
 });
+colabApi.interceptors.response.use((r) => r, (err) => Promise.reject(normalizeDetail(err)));
 
 const Ctx = createContext(null);
 

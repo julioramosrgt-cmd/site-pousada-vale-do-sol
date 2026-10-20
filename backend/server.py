@@ -9,6 +9,7 @@ import logging
 import hashlib
 import hmac
 import csv
+import calendar as cal
 import io
 from pathlib import Path
 from datetime import datetime, timezone, timedelta, date
@@ -31,6 +32,7 @@ import stripe
 from icalendar import Calendar, Event
 from breeds import classify_breed, ALL_BREEDS
 from holidays import get_brazilian_holidays, is_brazilian_holiday
+import hr_rules
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, UploadFile, File, Query, Header, Response, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from starlette.middleware.cors import CORSMiddleware
@@ -2048,6 +2050,636 @@ async def wa_templates_delete(tid: str, user=Depends(require_admin)):
 @api.get("/")
 async def root():
     return {"service": "pousada-mgmt", "status": "ok"}
+
+
+# ============================================================================
+# HR MODULE — Fase 1: colaboradores, escalas 5x2, dashboard, portal colaborador
+# ============================================================================
+
+class EmployeeIn(BaseModel):
+    name: str = Field(min_length=2)
+    cpf: Optional[str] = ""
+    role_title: Optional[str] = "Camareira"
+    email: Optional[str] = ""
+    phone: Optional[str] = ""
+    hire_date: str  # YYYY-MM-DD
+    base_salary: float = 0.0
+    weekly_hours: int = 44
+    weekly_rest_days: List[int] = [5, 6]  # 0=Mon..6=Sun
+    default_shift_start: str = "08:00"
+    default_shift_end: str = "17:00"
+    status: Optional[str] = "active"
+    dependents: int = 0
+    sunday_rest_every_weeks: int = Field(default=3, ge=1, le=7)
+    sunday_offset: int = 0
+
+
+class EmployeePortalPasswordIn(BaseModel):
+    password: str = Field(min_length=4)
+
+
+class ShiftUpdateIn(BaseModel):
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    is_rest: Optional[bool] = None
+    notes: Optional[str] = ""
+
+
+class EmployeeLoginIn(BaseModel):
+    email: str
+    password: str
+
+
+EMP_JWT_SUB_PREFIX = "emp:"
+
+
+def make_employee_jwt(employee_id: str) -> str:
+    return jwt.encode(
+        {"sub": EMP_JWT_SUB_PREFIX + employee_id,
+         "exp": datetime.now(timezone.utc) + timedelta(days=30)},
+        JWT_SECRET, algorithm=JWT_ALG,
+    )
+
+
+async def require_employee(token: Optional[str] = Depends(oauth2)):
+    if not token:
+        raise HTTPException(401, "Não autenticado")
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+    except jwt.PyJWTError:
+        raise HTTPException(401, "Token inválido ou expirado")
+    sub = payload.get("sub") or ""
+    if not sub.startswith(EMP_JWT_SUB_PREFIX):
+        raise HTTPException(401, "Token não é de colaborador")
+    emp_id = sub[len(EMP_JWT_SUB_PREFIX):]
+    emp = await db.employees.find_one({"id": emp_id, "status": "active"}, {"_id": 0, "portal_password_hash": 0})
+    if not emp:
+        raise HTTPException(401, "Colaborador não encontrado ou inativo")
+    return emp
+
+
+def month_bounds(month: str):
+    try:
+        y, m = int(month[:4]), int(month[5:7])
+        if m < 1 or m > 12 or len(month) != 7:
+            raise ValueError
+    except Exception:
+        raise HTTPException(400, "Formato inválido. Use YYYY-MM")
+    _, last_day = cal.monthrange(y, m)
+    return y, m, f"{month}-01", f"{month}-{last_day:02d}"
+
+
+async def apply_vacations_to_shifts(employee_id: str, start: str, end: str):
+    async for v in db.vacations.find({"employee_id": employee_id, "status": "approved",
+                                      "start_date": {"$lte": end}, "end_date": {"$gte": start}}, {"_id": 0}):
+        await db.shifts.update_many(
+            {"employee_id": employee_id, "date": {"$gte": max(start, v["start_date"]), "$lte": min(end, v["end_date"])}},
+            {"$set": {"is_rest": True, "is_vacation": True, "is_dsr": False, "start_time": None, "end_time": None, "notes": "Férias"}},
+        )
+
+
+# ----- Admin HR routes -----
+@api.post("/hr/employees")
+async def hr_create_employee(data: EmployeeIn, user=Depends(require_admin_role)):
+    doc = data.model_dump()
+    doc["id"] = new_id()
+    doc["email"] = (doc.get("email") or "").lower().strip()
+    doc["created_at"] = now_iso()
+    doc["portal_password_hash"] = None
+    doc["portal_password_set"] = False
+    await db.employees.insert_one(doc)
+    out = {k: v for k, v in doc.items() if k not in ("_id", "portal_password_hash")}
+    return out
+
+
+@api.get("/hr/employees")
+async def hr_list_employees(user=Depends(require_admin)):
+    cur = db.employees.find({}, {"_id": 0, "portal_password_hash": 0}).sort("name", 1)
+    return [e async for e in cur]
+
+
+@api.get("/hr/employees/{eid}")
+async def hr_get_employee(eid: str, user=Depends(require_admin)):
+    e = await db.employees.find_one({"id": eid}, {"_id": 0, "portal_password_hash": 0})
+    if not e: raise HTTPException(404, "Colaborador não encontrado")
+    return e
+
+
+@api.put("/hr/employees/{eid}")
+async def hr_update_employee(eid: str, data: EmployeeIn, user=Depends(require_admin_role)):
+    patch = data.model_dump()
+    patch["email"] = (patch.get("email") or "").lower().strip()
+    patch["updated_at"] = now_iso()
+    r = await db.employees.update_one({"id": eid}, {"$set": patch})
+    if r.matched_count == 0: raise HTTPException(404, "Colaborador não encontrado")
+    return {"ok": True}
+
+
+@api.delete("/hr/employees/{eid}")
+async def hr_delete_employee(eid: str, user=Depends(require_admin_role)):
+    await db.employees.delete_one({"id": eid})
+    await db.shifts.delete_many({"employee_id": eid})
+    return {"ok": True}
+
+
+@api.post("/hr/employees/{eid}/portal-password")
+async def hr_set_portal_password(eid: str, data: EmployeePortalPasswordIn, user=Depends(require_admin_role)):
+    hashed = bcrypt.hashpw(data.password.encode(), bcrypt.gensalt()).decode()
+    r = await db.employees.update_one(
+        {"id": eid},
+        {"$set": {"portal_password_hash": hashed, "portal_password_set": True, "updated_at": now_iso()}},
+    )
+    if r.matched_count == 0: raise HTTPException(404, "Colaborador não encontrado")
+    return {"ok": True}
+
+
+@api.post("/hr/employees/{eid}/schedule/generate")
+async def hr_generate_schedule(eid: str, month: str = Query(..., description="YYYY-MM"), user=Depends(require_admin_role)):
+    emp = await db.employees.find_one({"id": eid}, {"_id": 0})
+    if not emp: raise HTTPException(404, "Colaborador não encontrado")
+    y, m, first, last = month_bounds(month)
+    shifts = hr_rules.generate_shifts(emp, y, m, new_id)
+    await db.shifts.delete_many({"employee_id": eid, "date": {"$gte": first, "$lte": last}})
+    if shifts:
+        await db.shifts.insert_many([{**s, "created_at": now_iso()} for s in shifts])
+    await apply_vacations_to_shifts(eid, first, last)
+    saved = [s async for s in db.shifts.find({"employee_id": eid, "date": {"$gte": first, "$lte": last}}, {"_id": 0})]
+    return {"created": len(shifts), "violations": hr_rules.validate_schedule(saved, emp)}
+
+
+@api.get("/hr/schedule")
+async def hr_schedule(month: str = Query(..., description="YYYY-MM"),
+                      employee_id: Optional[str] = None,
+                      user=Depends(require_admin)):
+    _, _, first, last = month_bounds(month)
+    q: dict = {"date": {"$gte": first, "$lte": last}}
+    if employee_id: q["employee_id"] = employee_id
+    cur = db.shifts.find(q, {"_id": 0}).sort("date", 1)
+    return [s async for s in cur]
+
+
+@api.get("/hr/schedule/violations")
+async def hr_schedule_violations(month: str = Query(...), employee_id: str = Query(...), user=Depends(require_admin)):
+    _, _, first, last = month_bounds(month)
+    emp = await db.employees.find_one({"id": employee_id}, {"_id": 0, "portal_password_hash": 0})
+    if not emp: raise HTTPException(404, "Colaborador não encontrado")
+    shifts = [s async for s in db.shifts.find({"employee_id": employee_id, "date": {"$gte": first, "$lte": last}}, {"_id": 0})]
+    return hr_rules.validate_schedule(shifts, emp)
+
+
+@api.put("/hr/shifts/{sid}")
+async def hr_update_shift(sid: str, data: ShiftUpdateIn, user=Depends(require_admin_role)):
+    patch = {k: v for k, v in data.model_dump().items() if v is not None}
+    for k in ("start_time", "end_time"):
+        if patch.get(k) and not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", patch[k]):
+            raise HTTPException(400, "Horário inválido (HH:MM)")
+    if patch.get("is_rest") is False and not (patch.get("start_time") and patch.get("end_time")):
+        cur = await db.shifts.find_one({"id": sid}, {"_id": 0})
+        if not cur: raise HTTPException(404, "Turno não encontrado")
+        emp = await db.employees.find_one({"id": cur["employee_id"]}, {"_id": 0}) or {}
+        patch.setdefault("start_time", emp.get("default_shift_start") or "08:00")
+        patch.setdefault("end_time", emp.get("default_shift_end") or "17:00")
+        patch["is_vacation"] = False
+        patch["is_dsr"] = False
+    patch["source"] = "manual"
+    patch["updated_at"] = now_iso()
+    # If marked as rest, clear times; else require both times
+    if patch.get("is_rest") is True:
+        patch["start_time"] = None
+        patch["end_time"] = None
+        cur = await db.shifts.find_one({"id": sid}, {"_id": 0, "weekday": 1})
+        patch["is_dsr"] = bool(cur and cur.get("weekday") == 6)
+    r = await db.shifts.update_one({"id": sid}, {"$set": patch})
+    if r.matched_count == 0: raise HTTPException(404, "Turno não encontrado")
+    return {"ok": True}
+
+
+@api.get("/hr/dashboard")
+async def hr_dashboard(user=Depends(require_admin)):
+    now_br = datetime.now(hr_rules.BR_TZ)
+    today, now_hhmm = now_br.date().isoformat(), now_br.strftime("%H:%M")
+    employees = {}
+    async for e in db.employees.find({"status": "active"}, {"_id": 0, "portal_password_hash": 0}):
+        employees[e["id"]] = e
+    shifts_today = {s["employee_id"]: s async for s in db.shifts.find({"date": today}, {"_id": 0})}
+    punches: dict = {}
+    async for r in db.time_records.find({"date": today, "voided": {"$ne": True}}, {"_id": 0}).sort("ts", 1):
+        punches.setdefault(r["employee_id"], []).append(r)
+    working_now, on_break, resting, scheduled_today, late, off_today = [], [], [], [], [], []
+    for eid, emp in employees.items():
+        s = shifts_today.get(eid)
+        recs = punches.get(eid, [])
+        last = recs[-1]["type"] if recs else None
+        item = {"employee": emp, "shift": s, "last_punch": recs[-1] if recs else None}
+        if last in ("entrada", "fim_intervalo"):
+            working_now.append(item)
+        elif last == "inicio_intervalo":
+            on_break.append(item)
+        elif not s:
+            off_today.append(emp)
+        elif s.get("is_rest"):
+            resting.append(item)
+        elif not recs and s.get("start_time") and now_hhmm > (datetime.strptime(s["start_time"], "%H:%M") + timedelta(minutes=hr_rules.TOLERANCE_MIN)).strftime("%H:%M") and now_hhmm < (s.get("end_time") or "23:59"):
+            late.append(item)
+        else:
+            scheduled_today.append(item)
+    _, _, first, last_d = month_bounds(today[:7])
+    alerts = []
+    month_shifts: dict = {}
+    async for s in db.shifts.find({"date": {"$gte": first, "$lte": last_d}}, {"_id": 0}):
+        month_shifts.setdefault(s["employee_id"], []).append(s)
+    all_vac: dict = {}
+    async for v in db.vacations.find({}, {"_id": 0}):
+        all_vac.setdefault(v["employee_id"], []).append(v)
+    for eid, emp in employees.items():
+        if eid not in month_shifts:
+            alerts.append({"level": "info", "type": "escala", "employee_id": eid, "employee_name": emp["name"],
+                           "message": f"Sem escala gerada para {today[:7]}."})
+        else:
+            for v in hr_rules.validate_schedule(month_shifts[eid], emp)[:3]:
+                alerts.append({"level": "warning", "type": "escala", "employee_id": eid, "employee_name": emp["name"], "message": v["message"]})
+        for p in hr_rules.vacation_periods(emp, all_vac.get(eid, []), now_br.date()):
+            if p["status"] == "vencido":
+                alerts.append({"level": "danger", "type": "ferias", "employee_id": eid, "employee_name": emp["name"],
+                               "message": f"Férias VENCIDAS (aquisitivo {p['period_start']}) — saldo {p['balance']}d, pagamento em dobro (art. 137)."})
+            elif p["status"] == "vencendo":
+                alerts.append({"level": "warning", "type": "ferias", "employee_id": eid, "employee_name": emp["name"],
+                               "message": f"Férias vencem em {p['concessive_end']} — saldo {p['balance']}d."})
+    pending_vac = await db.vacations.count_documents({"status": "pending"})
+    for x in late:
+        alerts.append({"level": "warning", "type": "ponto", "employee_id": x["employee"]["id"], "employee_name": x["employee"]["name"],
+                       "message": f"Sem registro de entrada (turno às {x['shift']['start_time']})."})
+    return {
+        "today": today, "now": now_hhmm,
+        "working_now": working_now, "on_break": on_break, "resting_today": resting,
+        "scheduled_today": scheduled_today, "late": late, "off_today": off_today,
+        "alerts": alerts, "pending_vacations": pending_vac,
+        "totals": {"employees": len(employees), "working_now": len(working_now), "on_break": len(on_break),
+                   "resting_today": len(resting), "late": len(late), "off_today": len(off_today),
+                   "pending_vacations": pending_vac},
+    }
+
+
+# ----- Employee portal routes -----
+@api.post("/employee/auth/login")
+async def employee_login(data: EmployeeLoginIn):
+    email = (data.email or "").lower().strip()
+    emp = await db.employees.find_one({"email": email, "status": "active"}, {"_id": 0})
+    if not emp or not emp.get("portal_password_hash"):
+        raise HTTPException(401, "Credenciais inválidas")
+    try:
+        if not bcrypt.checkpw(data.password.encode(), emp["portal_password_hash"].encode()):
+            raise HTTPException(401, "Credenciais inválidas")
+    except ValueError:
+        raise HTTPException(401, "Credenciais inválidas")
+    token = make_employee_jwt(emp["id"])
+    emp.pop("portal_password_hash", None)
+    return {"access_token": token, "token_type": "bearer", "employee": emp}
+
+
+@api.get("/employee/me")
+async def employee_me(emp=Depends(require_employee)):
+    return emp
+
+
+@api.get("/employee/schedule")
+async def employee_schedule(month: str = Query(...), emp=Depends(require_employee)):
+    _, _, first, last = month_bounds(month)
+    cur = db.shifts.find({"employee_id": emp["id"], "date": {"$gte": first, "$lte": last}}, {"_id": 0}).sort("date", 1)
+    return [s async for s in cur]
+
+
+# ============================================================================
+# HR MODULE — Fase 2: ponto eletrônico, férias, folha (prévia)
+# ============================================================================
+
+class PunchAdjustIn(BaseModel):
+    employee_id: str
+    date: str
+    time: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    type: str
+    reason: str = Field(min_length=5)
+
+
+class VoidIn(BaseModel):
+    reason: str = Field(min_length=5)
+
+
+class VacationIn(BaseModel):
+    period_start: str
+    start_date: str
+    days: int = Field(ge=5, le=30)
+    sell_days: int = Field(default=0, ge=0, le=10)
+    notes: Optional[str] = ""
+
+
+class VacationHrIn(VacationIn):
+    employee_id: str
+
+
+class VacationDecisionIn(BaseModel):
+    approve: bool
+    notes: Optional[str] = ""
+
+
+def client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for")
+    return fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "")
+
+
+async def next_nsr() -> int:
+    doc = await db.counters.find_one_and_update({"_id": "time_record_nsr"}, {"$inc": {"value": 1}},
+                                                upsert=True, return_document=True)
+    return doc["value"]
+
+
+async def create_time_record(emp: dict, ts: datetime, rtype: str, source: str, ip: str, ua: str, **extra) -> dict:
+    nsr = await next_nsr()
+    last = await db.time_records.find_one({}, {"_id": 0, "hash": 1}, sort=[("nsr", -1)])
+    prev_hash = (last or {}).get("hash", "")
+    ts_iso = ts.astimezone(timezone.utc).isoformat()
+    local = ts.astimezone(hr_rules.BR_TZ)
+    digest = hashlib.sha256(f"{prev_hash}|{nsr}|{emp['id']}|{emp.get('cpf', '')}|{ts_iso}|{rtype}".encode()).hexdigest()
+    doc = {"id": new_id(), "nsr": nsr, "employee_id": emp["id"], "employee_name": emp["name"],
+           "employee_cpf": emp.get("cpf", ""), "date": local.date().isoformat(), "time": local.strftime("%H:%M:%S"),
+           "ts": ts_iso, "type": rtype, "source": source, "ip": ip, "user_agent": ua[:200],
+           "hash": digest, "prev_hash": prev_hash, "voided": False, "created_at": now_iso(), **extra}
+    await db.time_records.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+async def build_timesheet(emp: dict, month: str) -> dict:
+    _, _, first, last = month_bounds(month)
+    shifts = {s["date"]: s async for s in db.shifts.find({"employee_id": emp["id"], "date": {"$gte": first, "$lte": last}}, {"_id": 0})}
+    recs: dict = {}
+    async for r in db.time_records.find({"employee_id": emp["id"], "date": {"$gte": first, "$lte": last}}, {"_id": 0}).sort("ts", 1):
+        recs.setdefault(r["date"], []).append(r)
+    d, end = date.fromisoformat(first), date.fromisoformat(last)
+    days = []
+    while d <= end:
+        iso = d.isoformat()
+        shift = shifts.get(iso) if iso >= (emp.get("hire_date") or "") else None
+        day = hr_rules.compute_day(recs.get(iso, []), shift, iso)
+        day["all_records"] = recs.get(iso, [])
+        day["shift"] = shift
+        days.append(day)
+        d += timedelta(days=1)
+    working_days = sum(1 for x in days if x["expected_min"] > 0)
+    rest_days = sum(1 for x in days if x["is_rest"] and not x["is_vacation"]) + sum(1 for x in days if x["holiday"] and not x["is_rest"])
+    return {"employee": emp, "month": month, "days": days, "summary": hr_rules.summarize_month(days),
+            "working_days": working_days, "rest_days": rest_days}
+
+
+def _fmt_min(m: int) -> str:
+    return f"{m // 60:02d}:{m % 60:02d}"
+
+
+def _pdf_doc(buf, title: str):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate
+    return SimpleDocTemplate(buf, pagesize=A4, leftMargin=14*mm, rightMargin=14*mm, topMargin=14*mm, bottomMargin=14*mm, title=title)
+
+
+def _pdf_table(rows, widths=None, header=True):
+    from reportlab.lib import colors
+    from reportlab.platypus import Table, TableStyle
+    t = Table(rows, colWidths=widths, repeatRows=1 if header else 0)
+    style = [("FONTSIZE", (0, 0), (-1, -1), 8), ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d6d3d1")),
+             ("VALIGN", (0, 0), (-1, -1), "MIDDLE")]
+    if header:
+        style += [("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f5f5f4")), ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold")]
+    t.setStyle(TableStyle(style))
+    return t
+
+
+# ----- Ponto: colaborador -----
+@api.post("/employee/punch")
+async def employee_punch(request: Request, emp=Depends(require_employee)):
+    now = datetime.now(timezone.utc)
+    today = now.astimezone(hr_rules.BR_TZ).date().isoformat()
+    todays = [r async for r in db.time_records.find({"employee_id": emp["id"], "date": today, "voided": {"$ne": True}}, {"_id": 0}).sort("ts", 1)]
+    if todays and (now - datetime.fromisoformat(todays[-1]["ts"])).total_seconds() < 60:
+        raise HTTPException(429, "Aguarde 1 minuto entre marcações")
+    if len(todays) >= 4:
+        raise HTTPException(400, "Todas as marcações do dia já foram registradas. Procure o RH para ajustes.")
+    rtype = hr_rules.PUNCH_SEQUENCE[len(todays)]
+    rec = await create_time_record(emp, now, rtype, "portal", client_ip(request), request.headers.get("user-agent", ""))
+    return {**rec, "label": hr_rules.PUNCH_LABELS[rtype]}
+
+
+@api.get("/employee/punches/today")
+async def employee_punches_today(emp=Depends(require_employee)):
+    now_br = datetime.now(hr_rules.BR_TZ)
+    today = now_br.date().isoformat()
+    recs = [r async for r in db.time_records.find({"employee_id": emp["id"], "date": today, "voided": {"$ne": True}}, {"_id": 0}).sort("ts", 1)]
+    nxt = hr_rules.PUNCH_SEQUENCE[len(recs)] if len(recs) < 4 else None
+    return {"date": today, "server_time": now_br.strftime("%H:%M:%S"), "records": recs,
+            "next_type": nxt, "next_label": hr_rules.PUNCH_LABELS.get(nxt) if nxt else None}
+
+
+@api.get("/employee/timesheet")
+async def employee_timesheet(month: str = Query(...), emp=Depends(require_employee)):
+    return await build_timesheet(emp, month)
+
+
+# ----- Ponto: RH -----
+@api.get("/hr/timesheet")
+async def hr_timesheet(employee_id: str = Query(...), month: str = Query(...), user=Depends(require_admin)):
+    emp = await db.employees.find_one({"id": employee_id}, {"_id": 0, "portal_password_hash": 0})
+    if not emp: raise HTTPException(404, "Colaborador não encontrado")
+    return await build_timesheet(emp, month)
+
+
+@api.post("/hr/time-records")
+async def hr_adjust_punch(data: PunchAdjustIn, request: Request, user=Depends(require_admin_role)):
+    if data.type not in hr_rules.PUNCH_SEQUENCE:
+        raise HTTPException(400, "Tipo de marcação inválido")
+    emp = await db.employees.find_one({"id": data.employee_id}, {"_id": 0, "portal_password_hash": 0})
+    if not emp: raise HTTPException(404, "Colaborador não encontrado")
+    try:
+        ts = datetime.fromisoformat(f"{data.date}T{data.time}:00").replace(tzinfo=hr_rules.BR_TZ)
+    except ValueError:
+        raise HTTPException(400, "Data inválida")
+    if ts > datetime.now(timezone.utc):
+        raise HTTPException(400, "Não é possível incluir marcação futura")
+    return await create_time_record(emp, ts, data.type, "ajuste_rh", client_ip(request), request.headers.get("user-agent", ""),
+                                    adjusted_by=user.get("email"), reason=data.reason)
+
+
+@api.post("/hr/time-records/{rid}/void")
+async def hr_void_punch(rid: str, data: VoidIn, user=Depends(require_admin_role)):
+    r = await db.time_records.update_one({"id": rid, "voided": {"$ne": True}}, {"$set": {
+        "voided": True, "void_reason": data.reason, "voided_by": user.get("email"), "voided_at": now_iso()}})
+    if r.matched_count == 0: raise HTTPException(404, "Marcação não encontrada")
+    return {"ok": True}
+
+
+@api.get("/hr/timesheet/pdf")
+async def hr_timesheet_pdf(employee_id: str = Query(...), month: str = Query(...), user=Depends(require_admin)):
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph, Spacer
+    emp = await db.employees.find_one({"id": employee_id}, {"_id": 0, "portal_password_hash": 0})
+    if not emp: raise HTTPException(404, "Colaborador não encontrado")
+    ts = await build_timesheet(emp, month)
+    st = getSampleStyleSheet()
+    wd = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
+    rows = [["Data", "Dia", "Marcações", "Previsto", "Trabalhado", "HE 50%", "HE 100%", "Noturno", "Obs."]]
+    for d in ts["days"]:
+        marks = " ".join(r["time"][:5] + ("*" if r["source"] != "portal" else "") for r in d["records"])
+        obs = "Férias" if d["is_vacation"] else ("Folga" if d["is_rest"] else "")
+        obs = ", ".join([x for x in [obs, d["holiday"] or ""] + d["flags"] if x])
+        rows.append([d["date"][8:] + "/" + d["date"][5:7], wd[date.fromisoformat(d["date"]).weekday()], marks,
+                     _fmt_min(d["expected_min"]), _fmt_min(d["worked_min"]), _fmt_min(d["extra50_min"]),
+                     _fmt_min(d["extra100_min"]), _fmt_min(d["night_min"]), Paragraph(obs, st["BodyText"]) if obs else ""])
+    s = ts["summary"]
+    rows.append(["Total", "", "", _fmt_min(s["expected_min"]), _fmt_min(s["worked_min"]), _fmt_min(s["extra50_min"]),
+                 _fmt_min(s["extra100_min"]), _fmt_min(s["night_min"]), f"Faltas: {s['absences']}"])
+    buf = BytesIO()
+    doc = _pdf_doc(buf, f"Espelho de ponto {month}")
+    story = [Paragraph(f"<b>Espelho de Ponto — {month[5:]}/{month[:4]}</b>", st["Title"]),
+             Paragraph(f"Empregador: Pousada Vale do Sol · Colaborador: <b>{escape(emp['name'])}</b> · CPF: {escape(emp.get('cpf') or '-')} · "
+                       f"Cargo: {escape(emp.get('role_title') or '-')} · Admissão: {emp.get('hire_date')}", st["BodyText"]),
+             Spacer(1, 6),
+             _pdf_table(rows, [36, 26, 110, 40, 48, 40, 44, 40, 140]),
+             Spacer(1, 8),
+             Paragraph("* marcação incluída pelo RH (ajuste com justificativa registrada). Registros com NSR e hash encadeado "
+                       "(Portaria MTP 671/2021). Tolerância de 10 min/dia (art. 58 §1º CLT).", st["BodyText"]),
+             Spacer(1, 30),
+             Paragraph("_______________________________ &nbsp;&nbsp;&nbsp;&nbsp; _______________________________", st["BodyText"]),
+             Paragraph("Assinatura do colaborador &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Assinatura do empregador", st["BodyText"])]
+    doc.build(story)
+    return Response(content=buf.getvalue(), media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="espelho-ponto-{month}.pdf"'})
+
+
+# ----- Férias -----
+async def _vacation_context(emp: dict):
+    vacs = [v async for v in db.vacations.find({"employee_id": emp["id"]}, {"_id": 0}).sort("start_date", -1)]
+    today = datetime.now(hr_rules.BR_TZ).date()
+    return vacs, hr_rules.vacation_periods(emp, vacs, today), today
+
+
+async def _create_vacation(emp: dict, data: VacationIn, status_: str, by: str) -> dict:
+    vacs, periods, today = await _vacation_context(emp)
+    period = next((p for p in periods if p["period_start"] == data.period_start), None)
+    if not period: raise HTTPException(400, "Período aquisitivo inválido")
+    try:
+        start = date.fromisoformat(data.start_date)
+    except ValueError:
+        raise HTTPException(400, "Data inválida")
+    err = hr_rules.validate_vacation_request(period, start, data.days, data.sell_days, today)
+    if err: raise HTTPException(400, err)
+    end = start + timedelta(days=data.days - 1)
+    overlap = await db.vacations.find_one({"employee_id": emp["id"], "status": {"$in": ["pending", "approved"]},
+                                           "start_date": {"$lte": end.isoformat()}, "end_date": {"$gte": start.isoformat()}})
+    if overlap: raise HTTPException(400, "Já existe férias neste intervalo")
+    doc = {"id": new_id(), "employee_id": emp["id"], "employee_name": emp["name"], "period_start": data.period_start,
+           "start_date": start.isoformat(), "end_date": end.isoformat(), "days": data.days, "sell_days": data.sell_days,
+           "status": status_, "requested_by": by, "notes": data.notes or "", "created_at": now_iso(),
+           "notice_ok": (start - today).days >= 30}
+    await db.vacations.insert_one(doc)
+    doc.pop("_id", None)
+    if status_ == "approved":
+        await apply_vacations_to_shifts(emp["id"], doc["start_date"], doc["end_date"])
+    return doc
+
+
+@api.get("/employee/vacations")
+async def employee_vacations(emp=Depends(require_employee)):
+    vacs, periods, _ = await _vacation_context(emp)
+    return {"periods": periods, "requests": vacs}
+
+
+@api.post("/employee/vacations")
+async def employee_request_vacation(data: VacationIn, emp=Depends(require_employee)):
+    return await _create_vacation(emp, data, "pending", "employee")
+
+
+@api.post("/employee/vacations/{vid}/cancel")
+async def employee_cancel_vacation(vid: str, emp=Depends(require_employee)):
+    r = await db.vacations.update_one({"id": vid, "employee_id": emp["id"], "status": "pending"},
+                                      {"$set": {"status": "cancelled", "decided_at": now_iso()}})
+    if r.matched_count == 0: raise HTTPException(404, "Pedido não encontrado ou já decidido")
+    return {"ok": True}
+
+
+@api.get("/hr/vacations")
+async def hr_vacations(user=Depends(require_admin)):
+    out = []
+    async for emp in db.employees.find({"status": "active"}, {"_id": 0, "portal_password_hash": 0}).sort("name", 1):
+        vacs, periods, _ = await _vacation_context(emp)
+        out.append({"employee": emp, "periods": periods, "requests": vacs})
+    return out
+
+
+@api.post("/hr/vacations")
+async def hr_create_vacation(data: VacationHrIn, user=Depends(require_admin_role)):
+    emp = await db.employees.find_one({"id": data.employee_id}, {"_id": 0, "portal_password_hash": 0})
+    if not emp: raise HTTPException(404, "Colaborador não encontrado")
+    return await _create_vacation(emp, data, "approved", user.get("email") or "rh")
+
+
+@api.post("/hr/vacations/{vid}/decision")
+async def hr_decide_vacation(vid: str, data: VacationDecisionIn, user=Depends(require_admin_role)):
+    v = await db.vacations.find_one({"id": vid, "status": "pending"}, {"_id": 0})
+    if not v: raise HTTPException(404, "Pedido não encontrado ou já decidido")
+    new_status = "approved" if data.approve else "rejected"
+    await db.vacations.update_one({"id": vid}, {"$set": {"status": new_status, "decision_notes": data.notes or "",
+                                                         "decided_by": user.get("email"), "decided_at": now_iso()}})
+    if data.approve:
+        await apply_vacations_to_shifts(v["employee_id"], v["start_date"], v["end_date"])
+    return {"ok": True, "status": new_status}
+
+
+# ----- Folha (prévia) -----
+async def _payroll_for(emp: dict, month: str) -> dict:
+    ts = await build_timesheet(emp, month)
+    p = hr_rules.calc_payroll(emp, ts["summary"], ts["working_days"], ts["rest_days"])
+    p["month"] = month
+    return p
+
+
+@api.get("/hr/payroll")
+async def hr_payroll(month: str = Query(...), user=Depends(require_admin)):
+    month_bounds(month)
+    rows = [await _payroll_for(e, month) async for e in db.employees.find({"status": "active"}, {"_id": 0, "portal_password_hash": 0}).sort("name", 1)]
+    totals = {k: round(sum(r[k] for r in rows), 2) for k in ("gross", "inss", "net", "fgts")}
+    totals["irrf"] = round(sum(r["irrf"]["value"] for r in rows), 2)
+    return {"month": month, "rows": rows, "totals": totals, "tables": hr_rules.TABLES_REF, "preview": True}
+
+
+@api.get("/hr/payroll/pdf")
+async def hr_payroll_pdf(employee_id: str = Query(...), month: str = Query(...), user=Depends(require_admin)):
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph, Spacer
+    emp = await db.employees.find_one({"id": employee_id}, {"_id": 0, "portal_password_hash": 0})
+    if not emp: raise HTTPException(404, "Colaborador não encontrado")
+    p = await _payroll_for(emp, month)
+    st = getSampleStyleSheet()
+    brl = lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")  # noqa: E731
+    rows = [["Cód.", "Descrição", "Ref.", "Proventos", "Descontos"]]
+    rows += [[e["code"], e["label"], e["ref"], brl(e["value"]), ""] for e in p["earnings"] if e["value"]]
+    rows += [[d["code"], d["label"], d["ref"], "", brl(d["value"])] for d in p["deductions"] if d["value"]]
+    tot_desc = sum(d["value"] for d in p["deductions"][2:])
+    rows.append(["", "Totais", "", brl(p["gross"]), brl(tot_desc)])
+    rows.append(["", "LÍQUIDO A RECEBER", "", "", brl(p["net"])])
+    buf = BytesIO()
+    doc = _pdf_doc(buf, f"Holerite prévia {month}")
+    story = [Paragraph(f"<b>Demonstrativo de Pagamento — PRÉVIA — {month[5:]}/{month[:4]}</b>", st["Title"]),
+             Paragraph(f"Pousada Vale do Sol · <b>{escape(emp['name'])}</b> · CPF {escape(emp.get('cpf') or '-')} · "
+                       f"{escape(emp.get('role_title') or '-')} · Admissão {emp.get('hire_date')}", st["BodyText"]),
+             Spacer(1, 8), _pdf_table(rows, [36, 220, 70, 80, 80]), Spacer(1, 8),
+             _pdf_table([["Salário base", "Base INSS", "Base IRRF", "FGTS do mês (8%)", "Valor hora"],
+                         [brl(p["base_salary"]), brl(p["gross"]), brl(p["irrf"]["base"]), brl(p["fgts"]), brl(p["hour_value"])]]),
+             Spacer(1, 10),
+             Paragraph(f"<b>PRÉVIA — documento sem valor fiscal.</b> Estimativa calculada a partir do ponto eletrônico. "
+                       f"Tabelas: {p['tables']}. Não inclui férias, 13º, vale-transporte, benefícios ou convenção coletiva. "
+                       f"Confira com sua contabilidade antes do pagamento.", st["BodyText"])]
+    doc.build(story)
+    return Response(content=buf.getvalue(), media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="holerite-previa-{month}.pdf"'})
 
 
 app.include_router(api)

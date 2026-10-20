@@ -23,7 +23,7 @@ export function AuthProvider({ children }) {
   const logout = () => {
     localStorage.removeItem("pousada_token");
     setUser(null);
-    window.location.href = "/admin/login";
+    window.location.href = "/rh/login";
   };
 
   return <AuthCtx.Provider value={{ user, loading, login, logout }}>{children}</AuthCtx.Provider>;

@@ -2177,8 +2177,8 @@ async def hr_update_employee(eid: str, data: EmployeeIn, user=Depends(require_ad
 
 @api.delete("/hr/employees/{eid}")
 async def hr_delete_employee(eid: str, user=Depends(require_admin_role)):
-    await db.employees.update_one({"id": eid}, {"$set": {"status": "inactive", "deleted": True, "email": "", "updated_at": now_iso()}})
-    await db.shifts.delete_many({"employee_id": eid, "date": {"$gte": datetime.now(hr_rules.BR_TZ).date().isoformat()}})
+    r = await db.employees.update_one({"id": eid}, {"$set": {"status": "inactive", "deleted": True, "email": "", "updated_at": now_iso()}})
+    if r.matched_count == 0: raise HTTPException(404, "Colaborador não encontrado")
     return {"ok": True}
 
 
@@ -2199,12 +2199,22 @@ async def hr_generate_schedule(eid: str, month: str = Query(..., description="YY
     if not emp: raise HTTPException(404, "Colaborador não encontrado")
     y, m, first, last = month_bounds(month)
     shifts = hr_rules.generate_shifts(emp, y, m, new_id)
-    await db.shifts.delete_many({"employee_id": eid, "date": {"$gte": first, "$lte": last}})
-    if shifts:
-        await db.shifts.insert_many([{**s, "created_at": now_iso()} for s in shifts])
+    existing = {s["date"]: s async for s in db.shifts.find({"employee_id": eid, "date": {"$gte": first, "$lte": last}}, {"_id": 0})}
+    created = updated = kept = 0
+    for s in shifts:
+        old = existing.get(s["date"])
+        if not old:
+            await db.shifts.insert_one({**s, "created_at": now_iso()})
+            created += 1
+        elif old.get("source") == "manual":
+            kept += 1
+        else:
+            await db.shifts.update_one({"id": old["id"]}, {"$set": {**{k: v for k, v in s.items() if k != "id"}, "updated_at": now_iso()}})
+            updated += 1
     await apply_vacations_to_shifts(eid, first, last)
     saved = [s async for s in db.shifts.find({"employee_id": eid, "date": {"$gte": first, "$lte": last}}, {"_id": 0})]
-    return {"created": len(shifts), "violations": hr_rules.validate_schedule(saved, emp)}
+    return {"created": created + updated, "new": created, "updated": updated, "kept_manual": kept,
+            "violations": hr_rules.validate_schedule(saved, emp)}
 
 
 @api.get("/hr/schedule")

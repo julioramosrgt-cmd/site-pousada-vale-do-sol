@@ -46,7 +46,7 @@ export default function EmployeesPage() {
   };
 
   const remove = async (r) => {
-    if (!window.confirm(`Excluir ${r.name}? A escala vinculada será removida.`)) return;
+    if (!window.confirm(`Excluir ${r.name}? O colaborador ficará inativo; escala, ponto e férias são mantidos no histórico.`)) return;
     await api.delete(`/hr/employees/${r.id}`);
     toast.success("Removido");
     load();

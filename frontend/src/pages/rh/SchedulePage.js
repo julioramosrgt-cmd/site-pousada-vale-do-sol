@@ -47,7 +47,7 @@ export default function SchedulePage() {
     if (!empId) return toast.error("Selecione um colaborador");
     try {
       const r = await api.post(`/hr/employees/${empId}/schedule/generate?month=${month}`);
-      toast.success(`Escala gerada: ${r.data.created} dias`);
+      toast.success(`Escala gerada: ${r.data.created} dias${r.data.kept_manual ? ` · ${r.data.kept_manual} edição(ões) manual(is) preservada(s)` : ""}`);
       load();
     } catch (e) { toast.error(e?.response?.data?.detail || "Falha ao gerar"); }
   };

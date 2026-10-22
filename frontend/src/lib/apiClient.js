@@ -1,7 +1,6 @@
 import axios from "axios";
 
-const BASE = process.env.REACT_APP_BACKEND_URL;
-export const API = `${BASE}/api`;
+export const API = "https://admin.pousadavaledosol2024.com.br/api";
 
 export const api = axios.create({ baseURL: API });
 
